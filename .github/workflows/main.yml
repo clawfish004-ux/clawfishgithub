@@ -8,4 +8,4 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Event received
-        run: echo "API success!"
+        run: echo "API Trigger Success for clawfishgithub!"
