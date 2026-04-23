@@ -1,0 +1,37 @@
+name: Hourly AI Trigger
+
+on:
+  schedule:
+    - cron: '0 * * * *' # ၁ နာရီခြား တစ်ခါ တိတိ run မည်
+  workflow_dispatch: # Manual စမ်းသပ်ရန် (Actions tab ကနေ Run လို့ရသည်)
+
+jobs:
+  check-and-trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get Status from Firestore
+        id: check_status
+        run: |
+          # Firestore ကနေ Status ဖတ်ခြင်း
+          RESPONSE=$(curl -s "https://firestore.googleapis.com/v1/projects/ai-news-channel-d69be/databases/(default)/documents/clawfishaimews/dLGEejnpO6Bbt3Qqpr9o")
+          
+          # TikTok နဲ့ YouTube status ကို ဆွဲထုတ်ခြင်း
+          TT_STATUS=$(echo $RESPONSE | grep -o '"tt_auto_mode": [^,}]*' | cut -d' ' -f2)
+          YT_STATUS=$(echo $RESPONSE | grep -o '"yt_auto_mode": [^,}]*' | cut -d' ' -f2)
+          
+          # GitHub Environment ထဲသို့ သိမ်းဆည်းခြင်း
+          echo "tt_on=$TT_STATUS" >> $GITHUB_ENV
+          echo "yt_on=$YT_STATUS" >> $GITHUB_ENV
+
+      - name: Run TikTok AI Process
+        if: env.tt_on == 'true'
+        run: |
+          echo "TikTok Auto Mode is ON. Triggering AI Model..."
+          # --- ဒီအောက်က line မှာ ကိုကို့ရဲ့ TikTok Trigger URL ရှိရင် curl နဲ့ ထည့်နိုင်ပါတယ် ---
+
+      - name: Run YouTube AI Process
+        if: env.yt_on == 'true'
+        run: |
+          echo "YouTube Auto Mode is ON. Triggering AI Model..."
+          # --- ဒီအောက်က line မှာ ကိုကို့ရဲ့ YouTube Trigger URL ရှိရင် curl နဲ့ ထည့်နိုင်ပါတယ် ---
+          
