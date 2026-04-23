@@ -2,50 +2,36 @@ name: Hourly AI Trigger
 
 on:
   schedule:
-    - cron: '0 * * * *' # ၁ နာရီခြား တစ်ခါ run မည်
-  workflow_dispatch: # Manual စမ်းသပ်ရန်
+    - cron: '0 * * * *'
+  workflow_dispatch: 
 
 jobs:
   check-and-trigger:
     runs-on: ubuntu-latest
     steps:
-      - name: Get Status and Times from Firestore
+      - name: Get Status from Firestore
         id: check_status
         run: |
-          # Firestore REST API မှ Data ဖတ်ခြင်း
           RESPONSE=$(curl -s "https://firestore.googleapis.com/v1/projects/ai-news-channel-d69be/databases/(default)/documents/clawfishaimews/dLGEejnpO6Bbt3Qqpr9o")
           
-          # Status များ (true/false)
-          TT_ON=$(echo $RESPONSE | grep -o '"tt_auto_mode": [^,}]*' | cut -d' ' -f2)
-          YT_ON=$(echo $RESPONSE | grep -o '"yt_auto_mode": [^,}]*' | cut -d' ' -f2)
+          # Status Reading (Safe mode)
+          TT_ON=$(echo $RESPONSE | grep -o '"tt_auto_mode": [^,}]*' | cut -d' ' -f2 || echo "false")
+          YT_ON=$(echo $RESPONSE | grep -o '"yt_auto_mode": [^,}]*' | cut -d' ' -f2 || echo "false")
 
-          # TikTok Times (Field ၃ ခု)
-          TT1=$(echo $RESPONSE | grep -o '"tt_time_1": "[^"]*"' | cut -d'"' -f4)
-          TT2=$(echo $RESPONSE | grep -o '"tt_time_2": "[^"]*"' | cut -d'"' -f4)
-          TT3=$(echo $RESPONSE | grep -o '"tt_time_3": "[^"]*"' | cut -d'"' -f4)
-
-          # YouTube Times (Field ၃ ခု)
-          YT1=$(echo $RESPONSE | grep -o '"yt_time_1": "[^"]*"' | cut -d'"' -f4)
-          YT2=$(echo $RESPONSE | grep -o '"yt_time_2": "[^"]*"' | cut -d'"' -f4)
-          YT3=$(echo $RESPONSE | grep -o '"yt_time_3": "[^"]*"' | cut -d'"' -f4)
-
-          # မြန်မာစံတော်ချိန် (UTC +6:30) လက်ရှိနာရီကို ယူခြင်း
+          # Current Hour in Myanmar (UTC +6:30)
           CURRENT_HOUR=$(TZ='Asia/Yangon' date +'%H')
+          echo "Current Myanmar Hour: $CURRENT_HOUR"
 
-          # --- TikTok Time Logic ---
-          # နာရီ တူသလား စစ်ဆေးခြင်း
-          if [[ "$CURRENT_HOUR" == "$(echo $TT1 | cut -d':' -f1)"  "$CURRENT_HOUR" == "$(echo $TT2 | cut -d':' -f1)"  "$CURRENT_HOUR" == "$(echo $TT3 | cut -d':' -f1)" ]]; then
+          # Time Logic for TikTok
+          # Firestore ကလာတဲ့ string ထဲက နာရီကိုပဲ ဆွဲထုတ်ပြီး လက်ရှိနာရီနဲ့ တိုက်စစ်ခြင်း
+          if echo $RESPONSE | grep -q "\"tt_time_[1-3]\": \"$CURRENT_HOUR:"; then
              echo "TT_MATCH=true" >> $GITHUB_ENV
-          elif [[ -z "$TT1" && -z "$TT2" && -z "$TT3" ]]; then
-             echo "TT_MATCH=true" >> $GITHUB_ENV # အချိန်မထည့်ထားရင် အမြဲ run မည်
           else
              echo "TT_MATCH=false" >> $GITHUB_ENV
           fi
 
-          # --- YouTube Time Logic ---
-          if [[ "$CURRENT_HOUR" == "$(echo $YT1 | cut -d':' -f1)"  "$CURRENT_HOUR" == "$(echo $YT2 | cut -d':' -f1)"  "$CURRENT_HOUR" == "$(echo $YT3 | cut -d':' -f1)" ]]; then
-             echo "YT_MATCH=true" >> $GITHUB_ENV
-          elif [[ -z "$YT1" && -z "$YT2" && -z "$YT3" ]]; then
+          # Time Logic for YouTube
+          if echo $RESPONSE | grep -q "\"yt_time_[1-3]\": \"$CURRENT_HOUR:"; then
              echo "YT_MATCH=true" >> $GITHUB_ENV
           else
              echo "YT_MATCH=false" >> $GITHUB_ENV
@@ -57,11 +43,9 @@ jobs:
       - name: Run TikTok AI Process
         if: env.tt_on == 'true' && env.TT_MATCH == 'true'
         run: |
-          echo "TikTok match found at hour ${{ env.CURRENT_HOUR }}. Triggering..."
-          # ကိုကို့ရဲ့ TikTok Colab/API link ကို ဒီအောက်မှာ ထည့်နိုင်ပါတယ်
+          echo "TikTok match found. Triggering AI Model..."
 
       - name: Run YouTube AI Process
         if: env.yt_on == 'true' && env.YT_MATCH == 'true'
         run: |
-          echo "YouTube match found at hour ${{ env.CURRENT_HOUR }}. Triggering..."
-          # ကိုကို့ရဲ့ YouTube Colab/API link ကို ဒီအောက်မှာ ထည့်နိုင်ပါတယ်
+          echo "YouTube match found. Triggering AI Model..."
