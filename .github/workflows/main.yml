@@ -1,0 +1,11 @@
+name: External Trigger
+on:
+  repository_dispatch:
+    types: [trigger-event]
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Event received
+        run: echo "API success!"
