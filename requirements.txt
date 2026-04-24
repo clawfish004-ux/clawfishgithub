@@ -1,0 +1,9 @@
+asyncio
+requests
+nest_asyncio
+google-cloud-firestore
+google-oauth2
+google-genai
+edge-tts
+moviepy
+
