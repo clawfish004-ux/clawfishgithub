@@ -2,22 +2,37 @@ import os
 import asyncio
 import requests
 import nest_asyncio
-import json
-import datetime
-from google import genai
 import edge_tts
 
 nest_asyncio.apply()
 
 # --- CONFIG ---
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# Gemini မသုံးတော့တဲ့အတွက် API KEY မလိုပါဘူး
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-client = genai.Client(api_key=GEMINI_API_KEY)
+# English Voice Selection
+VOICE = "en-US-EmmaNeural" # ပုံပြင်လေးဆိုတော့ အမျိုးသမီးအသံ Emma နဲ့ ပိုလိုက်ဖက်နိုင်ပါတယ်
 
-# English Voice for 1-minute feel
-VOICE = "en-US-AndrewNeural" 
+# --- DIRECT STORY DATA ---
+STORY_DATA = {
+    "title": "The Little Star Who Forgot to Shine",
+    "content": """
+    The Little Star Who Forgot to Shine.
+    Once upon a time, in a quiet night sky, there was a little star named Luma. 
+    Unlike the other stars, Luma was shy. She often hid behind clouds because she thought her light was too small.
+    One night, the sky became very dark. A lost little boy on Earth was trying to find his way home. 
+    He looked up and saw no stars at all.
+    The moon whispered gently, "Luma, the boy needs you."
+    Luma trembled. "But I’m too small…"
+    Still, she slowly peeked out from behind a cloud. She gave the tiniest twinkle she could.
+    Down on Earth, the boy saw a soft light. "A star!" he said happily. 
+    He followed it step by step until he reached home.
+    From that night on, Luma understood something important— even the smallest light can guide someone home.
+    And so, she never hid again.
+    The end.
+    """
+}
 
 # --- TELEGRAM ---
 def send_msg(text):
@@ -36,34 +51,9 @@ def send_audio(audio_path, caption):
             files = {"audio": audio}
             data = {"chat_id": TELEGRAM_CHAT_ID, "caption": caption}
             res = requests.post(url, files=files, data=data)
-            print(f"Telegram response: {res.status_code}")
+            print(f"Telegram status: {res.status_code}")
     except Exception as e:
-        send_msg(f"❌ Audio Send Error: {e}")
-
-# --- GEMINI (English Content) ---
-async def get_news_text(topic):
-    # တစ်မိနစ်စာအတွက် စာလုံးရေ ၂၀၀ ကနေ ၂၅၀ ဝန်းကျင် ရေးခိုင်းထားပါတယ်
-    prompt = f"""
-    Write a professional news report about {topic} in English.
-    The length should be around 200 words (suitable for a 1-minute voiceover).
-    Focus on clarity and a modern tone.
-    
-    Return ONLY JSON:
-    {{
-      "title": "Headline here",
-      "content": "Full news text here..."
-    }}
-    """
-    try:
-        res = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=prompt
-        )
-        txt = res.text.replace("```json", "").replace("```", "").strip()
-        return json.loads(txt)
-    except Exception as e:
-        print(f"Gemini Error: {e}")
-        return None
+        print(f"❌ Telegram Send Error: {e}")
 
 # --- TTS ---
 async def generate_mp3(text, filename):
@@ -75,32 +65,26 @@ async def generate_mp3(text, filename):
         print(f"TTS Error: {e}")
         return None
 
-# --- TEST RUN ---
-async def test_audio_engine():
-    topic = "The Future of AI and Robotics in 2026"
-    print(f"🚀 Starting Audio Test: {topic}")
+# --- RUN TEST ---
+async def run_story_test():
+    print(f"🚀 Processing Story: {STORY_DATA['title']}")
     
-    # 1. Get Text
-    data = await get_news_text(topic)
-    if not data:
-        send_msg("❌ Failed to get news from Gemini")
-        return
-
-    # 2. Generate Audio
-    filename = "test_news.mp3"
-    audio_file = await generate_mp3(data["content"], filename)
+    filename = "luma_story.mp3"
+    
+    # Generate Audio from the hardcoded story
+    audio_file = await generate_mp3(STORY_DATA["content"], filename)
     
     if audio_file and os.path.exists(audio_file):
-        # 3. Send to Telegram
-        caption = f"🎙️ AI News Audio Test\nTitle: {data['title']}\nLanguage: English"
+        caption = f"⭐ Story Audio Test\nTitle: {STORY_DATA['title']}\nVoice: {VOICE}"
         send_audio(audio_file, caption)
-        print("✅ Audio sent successfully")
+        print("✅ Story MP3 sent to Telegram!")
         
         # Cleanup
-        os.remove(audio_file)
+        if os.path.exists(audio_file):
+            os.remove(audio_file)
     else:
-        send_msg("❌ Failed to generate MP3 file")
+        print("❌ Failed to generate MP3")
 
 if __name__ == "__main__":
-    asyncio.run(test_audio_engine())
+    asyncio.run(run_story_test())
 
