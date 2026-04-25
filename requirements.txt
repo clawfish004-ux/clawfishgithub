@@ -4,6 +4,10 @@ nest_asyncio
 google-cloud-firestore
 google-oauth2
 google-genai
+google-generativeai
+requests
 edge-tts
 moviepy
-
+imageio
+imageio-ffmpeg
+Pillow
