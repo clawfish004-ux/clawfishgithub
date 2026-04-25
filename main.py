@@ -12,7 +12,7 @@ from moviepy.editor import VideoFileClip, ImageClip, AudioFileClip, concatenate_
 
 nest_asyncio.apply()
 
-# --- Configuration ---
+# --- 2026 Engine Config ---
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -21,10 +21,8 @@ FIREBASE_SECRET = os.getenv("FIREBASE_SERVICE_ACCOUNT")
 
 KEY_PATH = "firebase_key.json"
 if FIREBASE_SECRET:
-    with open(KEY_PATH, "w") as f:
-        f.write(FIREBASE_SECRET)
+    with open(KEY_PATH, "w") as f: f.write(FIREBASE_SECRET)
 
-# AI & Database Clients
 client = genai.Client(api_key=GEMINI_API_KEY)
 credentials = service_account.Credentials.from_service_account_file(KEY_PATH)
 db = firestore.Client(credentials=credentials, project="ai-news-channel-d69be")
@@ -32,10 +30,11 @@ db = firestore.Client(credentials=credentials, project="ai-news-channel-d69be")
 YT_INTRO_FILE = "sunshineyt.mp4"
 TT_INTRO_FILE = "sunshinett.mp4"
 
+# --- Functions ---
+
 def send_telegram_msg(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    try:
-        requests.post(url, data={'chat_id': TELEGRAM_CHAT_ID, 'text': message}, timeout=10)
+    try: requests.post(url, data={'chat_id': TELEGRAM_CHAT_ID, 'text': message}, timeout=10)
     except: pass
 
 def send_telegram_video(video_path, caption):
@@ -43,7 +42,7 @@ def send_telegram_video(video_path, caption):
     try:
         if os.path.exists(video_path):
             with open(video_path, 'rb') as video:
-                requests.post(url, files={'video': video}, data={'chat_id': TELEGRAM_CHAT_ID, 'caption': caption}, timeout=240)
+                requests.post(url, files={'video': video}, data={'chat_id': TELEGRAM_CHAT_ID, 'caption': caption}, timeout=300)
     except Exception as e: print(f"Telegram Error: {e}")
 
 async def get_news_data(topic):
@@ -52,6 +51,15 @@ async def get_news_data(topic):
     clean_json = response.text.replace("```json", "").replace("```", "").strip()
     return json.loads(clean_json)
 
+def get_hour_only(time_val):
+    """Firestore ကလာတဲ့ format မျိုးစုံ (07:00, 7:00, 7) ကို နာရီနှစ်လုံး (07) အဖြစ် ပြောင်းပေးသည်"""
+    if not time_val: return None
+    time_str = str(time_val).strip()
+    if ":" in time_str:
+        h = time_str.split(":")[0]
+        return h.zfill(2)
+    return time_str.zfill(2)
+
 async def create_segment(topic, is_yt=True):
     res = (640, 360) if is_yt else (360, 640)
     try:
@@ -59,7 +67,6 @@ async def create_segment(topic, is_yt=True):
         audio_fn = f"audio_{topic[:3].replace(' ', '')}.mp3"
         await edge_tts.Communicate(data['news'], "my-MM-NanDaNeural").save(audio_fn)
         
-        # Pexels Images
         headers = {"Authorization": PEXELS_API_KEY}
         img_res = requests.get(f"https://api.pexels.com/v1/search?query={data['query']}&per_page=5", headers=headers, timeout=15).json()
         
@@ -85,19 +92,23 @@ async def create_segment(topic, is_yt=True):
         return output_fn
     except: return None
 
+# --- Runtime Engine ---
+
 async def run_clawfish_engine():
     try:
         doc = db.collection("clawfishaimews").document("dLGEejnpO6Bbt3Qqpr9o").get().to_dict()
         now = datetime.datetime.utcnow() + datetime.timedelta(hours=6, minutes=30)
-        current_time = now.strftime("%H:%M") 
+        current_hour = now.strftime("%H") 
         
-        send_telegram_msg(f"🔎 Engine Check: {current_time}")
+        send_telegram_msg(f"🔎 Engine Check: {now.strftime('%H:%M')} (Hour: {current_hour})")
         topics = ["World Politics 2026", "Military News", "Business", "Tech", "Myanmar Update"]
 
-        # YouTube logic
-        yt_times = [doc.get('yt_time_1'), doc.get('yt_time_2'), doc.get('yt_time_3')]
-        if doc.get('yt_auto_mode') is True and current_time in yt_times:
-            send_telegram_msg(f"📺 YouTube Production Started...")
+        yt_hours = [get_hour_only(doc.get(f'yt_time_{i}')) for i in range(1, 4)]
+        tt_hours = [get_hour_only(doc.get(f'tt_time_{i}')) for i in range(1, 4)]
+
+        # YouTube Production
+        if doc.get('yt_auto_mode') is True and current_hour in yt_hours:
+            send_telegram_msg(f"📺 YouTube Start (Hour {current_hour})")
             yt_segs = [await create_segment(t, is_yt=True) for t in topics]
             yt_segs = [s for s in yt_segs if s]
             if yt_segs:
@@ -105,14 +116,13 @@ async def run_clawfish_engine():
                 clips = [intro] + [VideoFileClip(s) for s in yt_segs]
                 final = concatenate_videoclips(clips, method="compose")
                 final.write_videofile("YT_Final.mp4", codec="libx264")
-                send_telegram_video("YT_Final.mp4", f"✅ YouTube Done! ({current_time})")
-                for c in clips: c.close()
                 final.close()
+                send_telegram_video("YT_Final.mp4", f"✅ YouTube (Hour {current_hour}) Done!")
+                for c in clips: c.close()
 
-        # TikTok logic
-        tt_times = [doc.get('tt_time_1'), doc.get('tt_time_2'), doc.get('tt_time_3')]
-        if doc.get('tt_auto_mode') is True and current_time in tt_times:
-            send_telegram_msg(f"📱 TikTok Production Started...")
+        # TikTok Production
+        if doc.get('tt_auto_mode') is True and current_hour in tt_hours:
+            send_telegram_msg(f"📱 TikTok Start (Hour {current_hour})")
             tt_segs = [await create_segment(t, is_yt=False) for t in topics]
             tt_segs = [s for s in tt_segs if s]
             if tt_segs:
@@ -120,9 +130,9 @@ async def run_clawfish_engine():
                 clips = [intro] + [VideoFileClip(s) for s in tt_segs]
                 final = concatenate_videoclips(clips, method="compose")
                 final.write_videofile("TT_Final.mp4", codec="libx264")
-                send_telegram_video("TT_Final.mp4", f"✅ TikTok Done! ({current_time})")
-                for c in clips: c.close()
                 final.close()
+                send_telegram_video("TT_Final.mp4", f"✅ TikTok (Hour {current_hour}) Done!")
+                for c in clips: c.close()
 
         # Cleanup
         for f in os.listdir():
@@ -134,4 +144,3 @@ async def run_clawfish_engine():
 
 if __name__ == "__main__":
     asyncio.run(run_clawfish_engine())
-    
