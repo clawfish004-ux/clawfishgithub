@@ -4,6 +4,7 @@ import requests
 import nest_asyncio
 import edge_tts
 import urllib.parse
+from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips
 
 nest_asyncio.apply()
 
@@ -31,62 +32,86 @@ STORY_DATA = {
     """
 }
 
-# --- AI IMAGE GENERATION (Pollinations AI) ---
-def generate_ai_images(prompts):
-    print("🎨 Generating AI Images...")
-    image_urls = []
-    for p in prompts:
-        # စာသားကို URL format ပြောင်းပြီး Pollinations ဆီက ပုံတောင်းတာ
+# --- 1. AI IMAGE GENERATION (Download to local) ---
+def download_ai_images(prompts):
+    print("🎨 Generating & Downloading AI Images...")
+    local_files = []
+    for i, p in enumerate(prompts):
         encoded_prompt = urllib.parse.quote(p)
-        url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&nologo=true"
-        image_urls.append(url)
-    return image_urls
+        url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=768&nologo=true&seed={i}"
+        
+        filepath = f"img_{i}.jpg"
+        img_data = requests.get(url).content
+        with open(filepath, "wb") as f:
+            f.write(img_data)
+        local_files.append(filepath)
+    return local_files
 
-# --- TELEGRAM: SEND ALBUM ---
-def send_media_group(images, caption):
+# --- 2. VIDEO PRODUCTION ---
+def create_story_video(image_files, audio_path, output_path):
+    print("🎬 Rendering Video...")
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMediaGroup"
-        media = []
-        for i, img_url in enumerate(images):
-            media.append({
-                "type": "photo",
-                "media": img_url,
-                "caption": caption if i == 0 else ""
-            })
-        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "media": media})
+        audio = AudioFileClip(audio_path)
+        # ပုံတစ်ပုံချင်းစီကို အချိန်ဘယ်လောက်ပြမလဲဆိုတာ တွက်တာ (Audio duration / ပုံအရေအတွက်)
+        duration_per_clip = audio.duration / len(image_files)
+        
+        clips = []
+        for img in image_files:
+            clip = ImageClip(img).set_duration(duration_per_clip).resize(height=720)
+            clips.append(clip)
+        
+        video = concatenate_videoclips(clips, method="compose")
+        video = video.set_audio(audio)
+        
+        # GitHub Action မှာ run မှာဖြစ်လို့ bitrate ကို နည်းနည်းလျှော့ထားပါတယ်
+        video.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac", temp_audiofile="temp-audio.m4a", remove_temp=True)
+        
+        audio.close()
+        return output_path
     except Exception as e:
-        print(f"Telegram Error: {e}")
+        print(f"Video Error: {e}")
+        return None
 
-# --- TTS & TELEGRAM AUDIO ---
-async def generate_and_send_audio():
-    filename = "luma_story.mp3"
-    communicate = edge_tts.Communicate(STORY_DATA["content"], VOICE)
-    await communicate.save(filename)
-    
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendAudio"
-    with open(filename, "rb") as audio:
-        requests.post(url, files={"audio": audio}, data={"chat_id": TELEGRAM_CHAT_ID, "caption": "🎙️ AI Voice Story"})
-    os.remove(filename)
+# --- 3. TELEGRAM SEND VIDEO ---
+def send_telegram_video(video_path, caption):
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendVideo"
+        with open(video_path, "rb") as v:
+            requests.post(url, files={"video": v}, data={"chat_id": TELEGRAM_CHAT_ID, "caption": caption})
+    except Exception as e:
+        print(f"Telegram Send Error: {e}")
 
 # --- MAIN ---
 async def main():
-    # ပုံပြင်ရဲ့ အဓိက အခန်းကဏ္ဍ (၄) ခုကို AI အတွက် Prompt ရေးထားပါတယ်
+    # Prompts for scenes
     prompts = [
-        "A cute shy little cartoon star hiding behind a fluffy cloud in a midnight sky, cinematic lighting, 3d render style",
-        "A small boy lost in a dark forest looking up at a dark empty sky, sad atmosphere, fairytale illustration",
-        "A small glowing star peeking from a cloud shining a bright warm light down on earth, magical atmosphere",
-        "A happy boy reaching his cozy house in the night, a small star twinkling brightly in the sky above, warm family vibe"
+        "Cute shy cartoon star hiding behind clouds, midnight sky, high quality illustration",
+        "A small boy lost in dark forest, looking at dark empty sky, storybook style",
+        "A small star twinkling bright light from behind a cloud, magic glow",
+        "Happy boy back at home, glowing house, star shining in the sky, warm ending"
     ]
     
-    # 1. AI နဲ့ ပုံထုတ်မယ်
-    image_urls = generate_ai_images(prompts)
+    # Step 1: TTS
+    print("🎙️ Generating Voice...")
+    audio_file = "voice.mp3"
+    await edge_tts.Communicate(STORY_DATA["content"], VOICE).save(audio_file)
     
-    # 2. Telegram ကို Album ပို့မယ်
-    send_media_group(image_urls, f"✨ AI Illustrations for: {STORY_DATA['title']}")
+    # Step 2: Images
+    img_files = download_ai_images(prompts)
     
-    # 3. အသံဖိုင် ပို့မယ်
-    await generate_and_send_audio()
-    print("✅ AI Story with Custom Images Sent!")
+    # Step 3: Video
+    video_file = "luma_story_video.mp4"
+    result = create_story_video(img_files, audio_file, video_file)
+    
+    # Step 4: Send
+    if result:
+        print("🚀 Sending to Telegram...")
+        send_telegram_video(result, f"🎬 Full Story Video: {STORY_DATA['title']}")
+    
+    # Cleanup
+    for f in img_files + [audio_file, video_file]:
+        if os.path.exists(f): os.remove(f)
+    print("✅ Process Completed!")
 
 if __name__ == "__main__":
     asyncio.run(main())
