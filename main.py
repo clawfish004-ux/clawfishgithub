@@ -3,20 +3,19 @@ import asyncio
 import requests
 import nest_asyncio
 import edge_tts
+import urllib.parse
 
 nest_asyncio.apply()
 
 # --- CONFIG ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
-
 VOICE = "en-US-EmmaNeural"
 
 STORY_DATA = {
     "title": "The Little Star Who Forgot to Shine",
-    "query": "night sky, small star, little boy, dark forest, twinkle star", # ပုံရှာဖို့ Keywords
     "content": """
+    The Little Star Who Forgot to Shine.
     Once upon a time, in a quiet night sky, there was a little star named Luma. 
     Unlike the other stars, Luma was shy. She often hid behind clouds because she thought her light was too small.
     One night, the sky became very dark. A lost little boy on Earth was trying to find his way home. 
@@ -32,19 +31,18 @@ STORY_DATA = {
     """
 }
 
-# --- FETCH IMAGES FROM PEXELS ---
-def fetch_story_images(query):
-    print(f"🖼️ Fetching images for: {query}")
-    try:
-        headers = {"Authorization": PEXELS_API_KEY}
-        url = f"https://api.pexels.com/v1/search?query={query}&per_page=5"
-        res = requests.get(url, headers=headers, timeout=15).json()
-        return [p['src']['large2x'] for p in res.get("photos", [])]
-    except Exception as e:
-        print(f"Pexels Error: {e}")
-        return []
+# --- AI IMAGE GENERATION (Pollinations AI) ---
+def generate_ai_images(prompts):
+    print("🎨 Generating AI Images...")
+    image_urls = []
+    for p in prompts:
+        # စာသားကို URL format ပြောင်းပြီး Pollinations ဆီက ပုံတောင်းတာ
+        encoded_prompt = urllib.parse.quote(p)
+        url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&nologo=true"
+        image_urls.append(url)
+    return image_urls
 
-# --- TELEGRAM: SEND MEDIA GROUP (Album) ---
+# --- TELEGRAM: SEND ALBUM ---
 def send_media_group(images, caption):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMediaGroup"
@@ -53,55 +51,43 @@ def send_media_group(images, caption):
             media.append({
                 "type": "photo",
                 "media": img_url,
-                "caption": caption if i == 0 else "" # ပထမဆုံးပုံမှာပဲ စာတန်းထည့်မယ်
+                "caption": caption if i == 0 else ""
             })
-        
-        payload = {
-            "chat_id": TELEGRAM_CHAT_ID,
-            "media": media
-        }
-        requests.post(url, json=payload)
-        print("✅ Images sent as album")
+        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "media": media})
     except Exception as e:
-        print(f"Telegram Media Error: {e}")
+        print(f"Telegram Error: {e}")
 
-# --- TTS ---
-async def generate_mp3(text, filename):
-    try:
-        communicate = edge_tts.Communicate(text, VOICE)
-        await communicate.save(filename)
-        return filename
-    except Exception as e:
-        print(f"TTS Error: {e}")
-        return None
+# --- TTS & TELEGRAM AUDIO ---
+async def generate_and_send_audio():
+    filename = "luma_story.mp3"
+    communicate = edge_tts.Communicate(STORY_DATA["content"], VOICE)
+    await communicate.save(filename)
+    
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendAudio"
+    with open(filename, "rb") as audio:
+        requests.post(url, files={"audio": audio}, data={"chat_id": TELEGRAM_CHAT_ID, "caption": "🎙️ AI Voice Story"})
+    os.remove(filename)
 
-def send_audio(audio_path, caption):
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendAudio"
-        with open(audio_path, "rb") as audio:
-            files = {"audio": audio}
-            data = {"chat_id": TELEGRAM_CHAT_ID, "caption": caption}
-            requests.post(url, files=files, data=data)
-    except Exception as e:
-        print(f"Audio Error: {e}")
-
-# --- MAIN RUN ---
-async def run_story_with_images():
-    # 1. Generate Audio
-    audio_file = await generate_mp3(STORY_DATA["content"], "luma.mp3")
+# --- MAIN ---
+async def main():
+    # ပုံပြင်ရဲ့ အဓိက အခန်းကဏ္ဍ (၄) ခုကို AI အတွက် Prompt ရေးထားပါတယ်
+    prompts = [
+        "A cute shy little cartoon star hiding behind a fluffy cloud in a midnight sky, cinematic lighting, 3d render style",
+        "A small boy lost in a dark forest looking up at a dark empty sky, sad atmosphere, fairytale illustration",
+        "A small glowing star peeking from a cloud shining a bright warm light down on earth, magical atmosphere",
+        "A happy boy reaching his cozy house in the night, a small star twinkling brightly in the sky above, warm family vibe"
+    ]
     
-    # 2. Fetch Images
-    image_urls = fetch_story_images(STORY_DATA["query"])
+    # 1. AI နဲ့ ပုံထုတ်မယ်
+    image_urls = generate_ai_images(prompts)
     
-    # 3. Send to Telegram
-    if image_urls:
-        send_media_group(image_urls, f"📸 Visuals for: {STORY_DATA['title']}")
+    # 2. Telegram ကို Album ပို့မယ်
+    send_media_group(image_urls, f"✨ AI Illustrations for: {STORY_DATA['title']}")
     
-    if audio_file:
-        send_audio(audio_file, f"🎙️ Audio Story: {STORY_DATA['title']}")
-        os.remove(audio_file)
-        print("✅ Done!")
+    # 3. အသံဖိုင် ပို့မယ်
+    await generate_and_send_audio()
+    print("✅ AI Story with Custom Images Sent!")
 
 if __name__ == "__main__":
-    asyncio.run(run_story_with_images())
+    asyncio.run(main())
 
