@@ -3,85 +3,69 @@ import asyncio
 import requests
 import nest_asyncio
 import json
-import time
-import re
 from google import genai
-import edge_tts
-from PIL import Image
-from moviepy.editor import VideoFileClip, ImageClip, AudioFileClip, concatenate_videoclips
+from google.genai import types
 
 nest_asyncio.apply()
 
-# Pillow version compatibility
-if not hasattr(Image, 'ANTIALIAS'):
-    Image.ANTIALIAS = Image.LANCZOS
-
-# --- Configuration (GitHub Secrets) ---
+# --- Configuration ---
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# Client setup using Gemini 3 Flash Preview
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 def send_telegram_msg(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     try:
         requests.post(url, data={'chat_id': TELEGRAM_CHAT_ID, 'text': message}, timeout=15)
-    except Exception as e:
-        print(f"Telegram Error: {e}")
+    except: pass
 
-async def get_news_data(topic):
-    """Gemini မှ သတင်းစာသား ထုတ်ယူခြင်း"""
-    # တစ်မိနစ်စာ ခန့်မှန်းခြေ စာလုံးရေ ၃၀၀ ကျော် ထည့်ခိုင်းထားပါတယ်
-    prompt = (
-        f"Write a professional 1-minute long news script about {topic} in Burmese for the year 2026. "
-        "The script should be detailed enough to last for 60 seconds. "
-        "Return ONLY a valid JSON object: {\"news\": \"burmese_text\", \"query\": \"english_keyword\"}"
-    )
+async def get_grounded_news():
+    """Google Search Grounding ကိုသုံးပြီး သတင်းရင်းမြစ်ကို ကန့်သတ်ခြင်း"""
     
+    # ကိုကို လိုချင်တဲ့ အရင်းအမြစ်တွေကို အလေးပေးဖို့ ညွှန်ကြားချက်
+    prompt = (
+        "မြန်မာနိုင်ငံ၏ လက်ရှိမြေပြင် စစ်ရေးနှင့် နိုင်ငံရေးအခြေအနေများကို အခြေခံ၍ ၁ မိနစ်စာ သတင်းရေးပေးပါ။ "
+        "သတင်းရင်းမြစ်များကို Khit Thit Media, DVB, Mizzima နှင့် Myanmar Now ကဲ့သို့သော "
+        "အတိုက်အခံ အင်အားစုဘက်က သတင်းဌာနများထံမှသာ အဓိကထား ရယူပါ။ "
+        "ပကတိမြေပြင်တွင် ဖြစ်ပျက်နေသော ဆင်းရဲဒုက္ခများနှင့် တိုက်ပွဲသတင်းများကို ထည့်သွင်းပါ။ "
+        "Return ONLY JSON: {\"news\": \"burmese_text\", \"query\": \"visual_search_keyword\"}"
+    )
+
     try:
-        # gemini-3-flash-preview model နာမည်ကို အသုံးပြုပါသည်
+        # Gemini 3 Flash ၏ Search Tool ကို အသုံးပြုခြင်း
         response = client.models.generate_content(
-            model="gemini-3-flash-preview", 
-            contents=prompt
+            model="gemini-3-flash-preview",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                tools=[types.Tool(google_search_retrieval=types.GoogleSearchRetrieval())]
+            )
         )
         
-        # Markdown backticks များကို ဖယ်ရှားခြင်း
+        # JSON ထုတ်ယူခြင်း
         clean_text = response.text.replace("```json", "").replace("```", "").strip()
-        data = json.loads(clean_text)
-        return data
+        # တစ်ခါတလေ Search လုပ်လျှင် အပိုစာသားများ ပါလာတတ်၍ JSON ကိုသာ ဖြတ်ယူပါသည်
+        json_start = clean_text.find('{')
+        json_end = clean_text.rfind('}') + 1
+        return json.loads(clean_text[json_start:json_end])
     except Exception as e:
-        send_telegram_msg(f"❌ Gemini Content Error: {str(e)}")
+        send_telegram_msg(f"❌ Grounding Error: {str(e)}")
         return None
 
-async def run_text_test():
-    try:
-        send_telegram_msg("🚀 Starting 1-Minute Text Generation Test...")
-        
-        topic = "Future of Digital Economy in Myanmar 2026"
-        data = await get_news_data(topic)
-        
-        if data:
-            news_content = data.get("news", "No news content")
-            search_query = data.get("query", "No query")
-            
-            # Telegram ကို စာသား အပြည့်အစုံ ပို့ခြင်း
-            # စာသားအရမ်းရှည်ရင် Telegram က လက်မခံတတ်လို့ ဖြတ်ပို့တာမျိုး မလုပ်ဘဲ အကုန်ပို့ပါတယ်
-            report = (
-                f"📰 **Generated News Script (1 Minute)**\n\n"
-                f"Topic: {topic}\n\n"
-                f"Script:\n{news_content}\n\n"
-                f"Pexels Query: {search_query}"
-            )
-            send_telegram_msg(report)
-            send_telegram_msg("✅ Text successfully generated and sent! Now we can proceed to Audio logic.")
-        else:
-            send_telegram_msg("❌ Failed to get data from Gemini.")
-            
-    except Exception as e:
-        send_telegram_msg(f"❌ Fatal System Error: {str(e)}")
+async def run_engine():
+    send_telegram_msg("🚀 Engine Active: Fetching Grounded News from Resistance Sources...")
+    
+    data = await get_grounded_news()
+    if data:
+        report = (
+            f"📰 **မြေပြင်အခြေအနေအခြေခံသတင်း (Resistance Sources Focus)**\n\n"
+            f"{data['news']}\n\n"
+            f"🔍 Keywords for Visuals: {data['query']}"
+        )
+        send_telegram_msg(report)
+        send_telegram_msg("✅ Grounded text generated! အသံဖိုင်ပိုင်း ပြန်ဆက်ရမလား ကိုကို?")
 
 if __name__ == "__main__":
-    asyncio.run(run_text_test())
+    asyncio.run(run_engine())
 
