@@ -12,7 +12,7 @@ from moviepy.editor import VideoFileClip, ImageClip, AudioFileClip, concatenate_
 
 nest_asyncio.apply()
 
-# --- 2026 Engine Config ---
+# --- Configuration (GitHub Secrets) ---
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -21,8 +21,10 @@ FIREBASE_SECRET = os.getenv("FIREBASE_SERVICE_ACCOUNT")
 
 KEY_PATH = "firebase_key.json"
 if FIREBASE_SECRET:
-    with open(KEY_PATH, "w") as f: f.write(FIREBASE_SECRET)
+    with open(KEY_PATH, "w") as f:
+        f.write(FIREBASE_SECRET)
 
+# AI & Firestore Clients
 client = genai.Client(api_key=GEMINI_API_KEY)
 credentials = service_account.Credentials.from_service_account_file(KEY_PATH)
 db = firestore.Client(credentials=credentials, project="ai-news-channel-d69be")
@@ -30,35 +32,38 @@ db = firestore.Client(credentials=credentials, project="ai-news-channel-d69be")
 YT_INTRO_FILE = "sunshineyt.mp4"
 TT_INTRO_FILE = "sunshinett.mp4"
 
-# --- Functions ---
+# --- Helper Functions ---
 
 def send_telegram_msg(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    try: requests.post(url, data={'chat_id': TELEGRAM_CHAT_ID, 'text': message}, timeout=10)
-    except: pass
+    try:
+        requests.post(url, data={'chat_id': TELEGRAM_CHAT_ID, 'text': message}, timeout=10)
+    except:
+        pass
 
 def send_telegram_video(video_path, caption):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendVideo"
     try:
         if os.path.exists(video_path):
             with open(video_path, 'rb') as video:
-                requests.post(url, files={'video': video}, data={'chat_id': TELEGRAM_CHAT_ID, 'caption': caption}, timeout=300)
-    except Exception as e: print(f"Telegram Error: {e}")
+                requests.post(url, files={'video': video}, data={'chat_id': TELEGRAM_CHAT_ID, 'caption': caption}, timeout=360)
+    except Exception as e:
+        send_telegram_msg(f"❌ Video Delivery Failed: {e}")
+
+def extract_hour(time_str):
+    """
+    Logic: 'Off' ဖြစ်နေရင် ကျော်မယ်။ 
+    အချိန်ပါလာရင် (ဥပမာ '07:00') ရှေ့က နာရီ '07' ကိုပဲ ယူမယ်။
+    """
+    if not time_str or str(time_str).lower() == "off":
+        return "SKIP_MODE"
+    return str(time_str).split(":")[0].zfill(2)
 
 async def get_news_data(topic):
-    prompt = f"၂၀၂၆ ခုနှစ်၏ {topic} သတင်းကို မြန်မာလို ၁ မိနစ်စာ ရေးပေးပါ။ JSON သာ ထုတ်ပေးပါ: {{\"news\": \"သတင်းအချက်အလက်\", \"query\": \"search_keyword\"}}"
+    prompt = f"၂၀၂၆ ခုနှစ်၏ {topic} သတင်းကို မြန်မာလို ၁ မိနစ်စာ ရေးပေးပါ။ JSON သာ ထုတ်ပေးပါ: {{\"news\": \"သတင်းစာသား\", \"query\": \"search_keyword\"}}"
     response = client.models.generate_content(model="gemini-3.1-flash", contents=prompt)
     clean_json = response.text.replace("```json", "").replace("```", "").strip()
     return json.loads(clean_json)
-
-def get_hour_only(time_val):
-    """Firestore ကလာတဲ့ format မျိုးစုံ (07:00, 7:00, 7) ကို နာရီနှစ်လုံး (07) အဖြစ် ပြောင်းပေးသည်"""
-    if not time_val: return None
-    time_str = str(time_val).strip()
-    if ":" in time_str:
-        h = time_str.split(":")[0]
-        return h.zfill(2)
-    return time_str.zfill(2)
 
 async def create_segment(topic, is_yt=True):
     res = (640, 360) if is_yt else (360, 640)
@@ -68,7 +73,7 @@ async def create_segment(topic, is_yt=True):
         await edge_tts.Communicate(data['news'], "my-MM-NanDaNeural").save(audio_fn)
         
         headers = {"Authorization": PEXELS_API_KEY}
-        img_res = requests.get(f"https://api.pexels.com/v1/search?query={data['query']}&per_page=5", headers=headers, timeout=15).json()
+        img_res = requests.get(f"https://api.pexels.com/v1/search?query={data['query']}&per_page=5", headers=headers).json()
         
         audio_clip = AudioFileClip(audio_fn)
         img_paths = []
@@ -85,62 +90,67 @@ async def create_segment(topic, is_yt=True):
         segment_video = concatenate_videoclips(clips, method="compose").set_audio(audio_clip).set_size(res)
         
         output_fn = f"seg_{'yt' if is_yt else 'tt'}_{topic[:3]}.mp4"
-        segment_video.write_videofile(output_fn, fps=24, codec="libx264", audio_codec="aac", logger=None)
+        segment_video.write_videofile(output_fn, fps=24, codec="libx264", logger=None)
         
         audio_clip.close()
         segment_video.close()
         return output_fn
-    except: return None
+    except:
+        return None
 
-# --- Runtime Engine ---
+# --- Main Engine ---
 
 async def run_clawfish_engine():
     try:
+        # Get Data from Firestore
         doc = db.collection("clawfishaimews").document("dLGEejnpO6Bbt3Qqpr9o").get().to_dict()
-        now = datetime.datetime.utcnow() + datetime.timedelta(hours=6, minutes=30)
-        current_hour = now.strftime("%H") 
         
-        send_telegram_msg(f"🔎 Engine Check: {now.strftime('%H:%M')} (Hour: {current_hour})")
-        topics = ["World Politics 2026", "Military News", "Business", "Tech", "Myanmar Update"]
+        # Get Current Myanmar Time
+        now = datetime.datetime.utcnow() + datetime.timedelta(hours=6, minutes=30)
+        current_hour = now.strftime("%H") # "07", "15" etc.
+        
+        send_telegram_msg(f"🔎 Engine Active: {now.strftime('%H:%M')} (Hour: {current_hour})")
+        topics = ["World News 2026", "Military & Tech Update", "Myanmar Current Events"]
 
-        yt_hours = [get_hour_only(doc.get(f'yt_time_{i}')) for i in range(1, 4)]
-        tt_hours = [get_hour_only(doc.get(f'tt_time_{i}')) for i in range(1, 4)]
-
-        # YouTube Production
+        # 1. YouTube Production Logic
+        yt_hours = [extract_hour(doc.get(f'yt_time_{i}')) for i in range(1, 4)]
         if doc.get('yt_auto_mode') is True and current_hour in yt_hours:
-            send_telegram_msg(f"📺 YouTube Start (Hour {current_hour})")
+            send_telegram_msg(f"📺 YouTube Production Starting (Hour: {current_hour})")
             yt_segs = [await create_segment(t, is_yt=True) for t in topics]
             yt_segs = [s for s in yt_segs if s]
             if yt_segs:
                 intro = VideoFileClip(YT_INTRO_FILE).resize((640, 360))
                 clips = [intro] + [VideoFileClip(s) for s in yt_segs]
                 final = concatenate_videoclips(clips, method="compose")
-                final.write_videofile("YT_Final.mp4", codec="libx264")
+                out_name = f"Final_YT_{current_hour}.mp4"
+                final.write_videofile(out_name, codec="libx264")
                 final.close()
-                send_telegram_video("YT_Final.mp4", f"✅ YouTube (Hour {current_hour}) Done!")
-                for c in clips: c.close()
+                send_telegram_video(out_name, f"✅ YouTube Done (Hour: {current_hour})")
 
-        # TikTok Production
+        # 2. TikTok Production Logic
+        tt_hours = [extract_hour(doc.get(f'tt_time_{i}')) for i in range(1, 4)]
         if doc.get('tt_auto_mode') is True and current_hour in tt_hours:
-            send_telegram_msg(f"📱 TikTok Start (Hour {current_hour})")
+            send_telegram_msg(f"📱 TikTok Production Starting (Hour: {current_hour})")
             tt_segs = [await create_segment(t, is_yt=False) for t in topics]
             tt_segs = [s for s in tt_segs if s]
             if tt_segs:
                 intro = VideoFileClip(TT_INTRO_FILE).resize((360, 640))
                 clips = [intro] + [VideoFileClip(s) for s in tt_segs]
                 final = concatenate_videoclips(clips, method="compose")
-                final.write_videofile("TT_Final.mp4", codec="libx264")
+                out_name = f"Final_TT_{current_hour}.mp4"
+                final.write_videofile(out_name, codec="libx264")
                 final.close()
-                send_telegram_video("TT_Final.mp4", f"✅ TikTok (Hour {current_hour}) Done!")
-                for c in clips: c.close()
+                send_telegram_video(out_name, f"✅ TikTok Done (Hour: {current_hour})")
 
-        # Cleanup
+        # 3. Cleanup Files
         for f in os.listdir():
             if any(x in f for x in ["audio_", "i_", "seg_", "Final"]) and f not in [YT_INTRO_FILE, TT_INTRO_FILE]:
                 try: os.remove(f)
                 except: pass
                 
-    except Exception as e: send_telegram_msg(f"❌ Error: {str(e)}")
+    except Exception as e:
+        send_telegram_msg(f"❌ Engine Error: {str(e)}")
 
 if __name__ == "__main__":
     asyncio.run(run_clawfish_engine())
+    
