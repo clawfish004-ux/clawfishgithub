@@ -5,8 +5,14 @@ import nest_asyncio
 import edge_tts
 import urllib.parse
 from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips
+from PIL import Image
 
 nest_asyncio.apply()
+
+# --- PIL FIXED ---
+# Pillow version 10 အထက်မှာ ANTIALIAS မရှိတော့လို့ ဒါလေး ထည့်ပေးရပါတယ်။
+if not hasattr(Image, 'ANTIALIAS'):
+    Image.ANTIALIAS = Image.Resampling.LANCZOS
 
 # --- CONFIG ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -32,13 +38,14 @@ STORY_DATA = {
     """
 }
 
-# --- 1. AI IMAGE GENERATION (Download to local) ---
+# --- 1. AI IMAGE GENERATION ---
 def download_ai_images(prompts):
     print("🎨 Generating & Downloading AI Images...")
     local_files = []
     for i, p in enumerate(prompts):
         encoded_prompt = urllib.parse.quote(p)
-        url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=768&nologo=true&seed={i}"
+        # Video size နဲ့ ကိုက်အောင် 640x360 ပဲ တောင်းလိုက်ပါတယ်
+        url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=640&height=360&nologo=true&seed={i+51}"
         
         filepath = f"img_{i}.jpg"
         img_data = requests.get(url).content
@@ -49,30 +56,30 @@ def download_ai_images(prompts):
 
 # --- 2. VIDEO PRODUCTION ---
 def create_story_video(image_files, audio_path, output_path):
-    print("🎬 Rendering Video...")
+    print("🎬 Rendering Video (640x360)...")
     try:
         audio = AudioFileClip(audio_path)
-        # ပုံတစ်ပုံချင်းစီကို အချိန်ဘယ်လောက်ပြမလဲဆိုတာ တွက်တာ (Audio duration / ပုံအရေအတွက်)
         duration_per_clip = audio.duration / len(image_files)
         
         clips = []
         for img in image_files:
-            clip = ImageClip(img).set_duration(duration_per_clip).resize(height=720)
+            # size ကို (640, 360) သတ်မှတ်လိုက်ပါတယ်
+            clip = ImageClip(img).set_duration(duration_per_clip).resize(newsize=(640, 360))
             clips.append(clip)
         
         video = concatenate_videoclips(clips, method="compose")
         video = video.set_audio(audio)
         
-        # GitHub Action မှာ run မှာဖြစ်လို့ bitrate ကို နည်းနည်းလျှော့ထားပါတယ်
-        video.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac", temp_audiofile="temp-audio.m4a", remove_temp=True)
+        # GitHub Actions အတွက် ပေါ့ပါးအောင် bitrate လျှော့ထားပါတယ်
+        video.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac", bitrate="500k", logger=None)
         
         audio.close()
         return output_path
     except Exception as e:
-        print(f"Video Error: {e}")
+        print(f"Video Production Error: {e}")
         return None
 
-# --- 3. TELEGRAM SEND VIDEO ---
+# --- 3. TELEGRAM ---
 def send_telegram_video(video_path, caption):
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendVideo"
@@ -83,35 +90,33 @@ def send_telegram_video(video_path, caption):
 
 # --- MAIN ---
 async def main():
-    # Prompts for scenes
     prompts = [
-        "Cute shy cartoon star hiding behind clouds, midnight sky, high quality illustration",
-        "A small boy lost in dark forest, looking at dark empty sky, storybook style",
-        "A small star twinkling bright light from behind a cloud, magic glow",
-        "Happy boy back at home, glowing house, star shining in the sky, warm ending"
+        "Cute shy star cartoon character hiding behind fluffy clouds, night sky, children's book style",
+        "Small boy lost in a dark forest, looking up at an empty black sky, emotional illustration",
+        "Small glowing star peeking out and shining bright warm light, magical fairytale atmosphere",
+        "Happy boy standing in front of his home, twinkling star in the sky, cozy warm night vibe"
     ]
     
-    # Step 1: TTS
-    print("🎙️ Generating Voice...")
+    # TTS
     audio_file = "voice.mp3"
     await edge_tts.Communicate(STORY_DATA["content"], VOICE).save(audio_file)
     
-    # Step 2: Images
+    # Images
     img_files = download_ai_images(prompts)
     
-    # Step 3: Video
-    video_file = "luma_story_video.mp4"
+    # Video
+    video_file = "luma_story.mp4"
     result = create_story_video(img_files, audio_file, video_file)
     
-    # Step 4: Send
+    # Send
     if result:
         print("🚀 Sending to Telegram...")
-        send_telegram_video(result, f"🎬 Full Story Video: {STORY_DATA['title']}")
+        send_telegram_video(result, f"🎬 Full Video: {STORY_DATA['title']}\nSize: 640x360")
     
     # Cleanup
     for f in img_files + [audio_file, video_file]:
         if os.path.exists(f): os.remove(f)
-    print("✅ Process Completed!")
+    print("✅ Done!")
 
 if __name__ == "__main__":
     asyncio.run(main())
