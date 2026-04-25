@@ -7,7 +7,6 @@ import time
 import re
 from google import genai
 import edge_tts
-from gtts import gTTS # Backup TTS အတွက် ထည့်ထားပါသည်
 from moviepy.editor import VideoFileClip, ImageClip, AudioFileClip, concatenate_videoclips
 
 nest_asyncio.apply()
@@ -18,8 +17,8 @@ PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
+# Gemini 3 Flash Preview Client
 client = genai.Client(api_key=GEMINI_API_KEY)
-YT_INTRO_FILE = "sunshineyt.mp4"
 
 def send_telegram_msg(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -27,77 +26,79 @@ def send_telegram_msg(message):
         requests.post(url, data={'chat_id': TELEGRAM_CHAT_ID, 'text': message}, timeout=15)
     except: pass
 
-def clean_text(text):
-    # စာသားထဲမှ သင်္ကေတများကို အကုန်ရှင်းထုတ်ပါသည်
-    return re.sub(r'[^\w\s\u1000-\u109F၊။]', '', text).strip()
+def clean_text_for_tts(text):
+    # edge-tts error မတက်အောင် special characters များကို ရှင်းထုတ်ခြင်း
+    return re.sub(r'[*#_`]', '', text)
 
-async def get_audio(text, filename):
-    """Edge-TTS ကို အရင်စမ်းပြီး မရပါက gTTS နှင့် အစားထိုးပါသည်"""
-    cleaned = clean_text(text)
+async def get_news_data(topic):
+    prompt = f"Write a professional 1-minute news story about {topic} in Burmese. JSON only: {{\"news\": \"text content\", \"query\": \"english search term\"}}"
     try:
-        # Strategy 1: Edge-TTS
-        communicate = edge_tts.Communicate(cleaned, "my-MM-NanDaNeural")
-        await communicate.save(filename)
-        if os.path.exists(filename) and os.path.getsize(filename) > 1000:
-            return True
-    except:
-        pass
-    
-    try:
-        # Strategy 2: gTTS (Google TTS) as Backup
-        tts = gTTS(text=cleaned, lang='my')
-        tts.save(filename)
-        if os.path.exists(filename):
-            return True
+        # gemini-3-flash-preview ကို အသုံးပြုထားပါသည်
+        response = client.models.generate_content(model="gemini-3-flash-preview", contents=prompt)
+        clean_text = response.text.replace("```json", "").replace("```", "").strip()
+        return json.loads(clean_text)
     except Exception as e:
-        send_telegram_msg(f"❌ All TTS Engines Failed: {str(e)}")
-        return False
+        send_telegram_msg(f"❌ Gemini Error: {str(e)}")
+        return None
 
-async def create_test_video(topic):
-    data_prompt = f"Write a 40-second news about {topic} in Burmese. JSON: {{\"news\": \"text\", \"query\": \"keyword\"}}"
+async def create_one_minute_video(topic):
     try:
-        # gemini-3-flash-preview ကို အသုံးပြုသည်
-        response = client.models.generate_content(model="gemini-3-flash-preview", contents=data_prompt)
-        data = json.loads(response.text.replace("```json", "").replace("```", "").strip())
+        data = await get_news_data(topic)
+        if not data: return None
         
-        audio_fn = "final_audio.mp3"
-        if not await get_audio(data['news'], audio_fn):
+        # 1. TTS Generation (edge-tts ကိုသာ အသုံးပြုသည်)
+        audio_fn = "test_audio.mp3"
+        tts_text = clean_text_for_tts(data['news'])
+        communicate = edge_tts.Communicate(tts_text, "my-MM-NanDaNeural")
+        await communicate.save(audio_fn)
+        
+        if not os.path.exists(audio_fn):
+            send_telegram_msg("❌ TTS Failed: Audio file not created.")
             return None
 
-        # Pexels images
+        # 2. Image Search (Pexels)
         headers = {"Authorization": PEXELS_API_KEY}
-        img_res = requests.get(f"https://api.pexels.com/v1/search?query={data['query']}&per_page=4", headers=headers).json()
+        img_res = requests.get(f"https://api.pexels.com/v1/search?query={data['query']}&per_page=5", headers=headers).json()
         
+        if 'photos' not in img_res or not img_res['photos']:
+            send_telegram_msg(f"⚠️ No images for: {data['query']}")
+            return None
+
+        # 3. Video Composition
         audio_clip = AudioFileClip(audio_fn)
         img_paths = []
         for i, p in enumerate(img_res['photos']):
             img_data = requests.get(p['src']['large2x']).content
-            path = f"t_{i}.jpg"
+            path = f"img_{i}.jpg"
             with open(path, 'wb') as f: f.write(img_data)
             img_paths.append(path)
 
         duration = audio_clip.duration / len(img_paths)
         clips = [ImageClip(m).set_duration(duration).resize(width=1280).set_position("center") for m in img_paths]
         
-        final = concatenate_videoclips(clips, method="compose").set_audio(audio_clip).set_size((1280, 720))
-        output = "One_Minute_Done.mp4"
-        final.write_videofile(output, fps=24, codec="libx264", audio_codec="aac", logger=None)
+        final_video = concatenate_videoclips(clips, method="compose").set_audio(audio_clip).set_size((1280, 720))
+        output_fn = "One_Minute_Production.mp4"
+        final_video.write_videofile(output_fn, fps=24, codec="libx264", audio_codec="aac", logger=None)
         
         audio_clip.close()
-        final.close()
-        return output
+        final_video.close()
+        return output_fn
     except Exception as e:
-        send_telegram_msg(f"❌ Error: {str(e)}")
+        send_telegram_msg(f"❌ Production Error: {str(e)}")
         return None
 
-async def run():
-    send_telegram_msg("🔄 Starting Final TTS-Fix Test (1-Minute)...")
-    video = await create_test_video("Digitalization in Myanmar")
-    if video:
-        send_telegram_msg(f"✅ Success! Video created using backup TTS engine.")
-    else:
-        send_telegram_msg("❌ Still failing to get audio.")
+async def run_test():
+    try:
+        send_telegram_msg("🚀 Engine Active: Starting 1-Minute Clean Test...")
+        video_file = await create_one_minute_video("Advancements in Medicine 2026")
+        
+        if video_file:
+            send_telegram_msg(f"✅ Success! Video created: {video_file}")
+        else:
+            send_telegram_msg("❌ Production Failed.")
+    except Exception as e:
+        send_telegram_msg(f"❌ Fatal Error: {str(e)}")
 
 if __name__ == "__main__":
-    asyncio.run(run())
+    asyncio.run(run_test())
 
