@@ -4,15 +4,13 @@ import requests
 import nest_asyncio
 import json
 import time
-import re
 from google import genai
-import edge_tts
 from PIL import Image
 from moviepy.editor import VideoFileClip, ImageClip, AudioFileClip, concatenate_videoclips
 
 nest_asyncio.apply()
 
-# Pillow compatibility fix
+# Pillow version compatibility fix
 if not hasattr(Image, 'ANTIALIAS'):
     Image.ANTIALIAS = Image.LANCZOS
 
@@ -22,6 +20,7 @@ PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
+# Gemini Client Setup
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 def send_telegram_msg(message):
@@ -30,84 +29,65 @@ def send_telegram_msg(message):
         requests.post(url, data={'chat_id': TELEGRAM_CHAT_ID, 'text': message}, timeout=15)
     except: pass
 
-def clean_for_tts(text):
-    """Unicode Error ကာကွယ်ရန် စာသားသန့်စင်ခြင်း"""
-    # မြန်မာစာသားနှင့် ကိန်းဂဏန်းများမှလွဲ၍ ကျန်တာများကို ဖယ်ရှားပါသည်
-    clean = re.sub(r'[^\u1000-\u109F\u0030-\u0039\s၊။\-]', '', text)
-    return clean.strip()
-
-async def get_news_data(topic):
-    prompt = f"Write a 1-minute news story about {topic} in Burmese. JSON only: {{\"news\": \"text\", \"query\": \"keyword\"}}"
+async def create_news_with_gemini_voice(topic):
     try:
-        response = client.models.generate_content(model="gemini-3-flash-preview", contents=prompt)
-        clean_text = response.text.replace("```json", "").replace("```", "").strip()
-        return json.loads(clean_text)
-    except: return None
+        # 1. Gemini ဆီကနေ သတင်း script ရော၊ အသံဖိုင် (Audio Bytes) ပါ တစ်ခါတည်း တောင်းပါတယ်
+        # Gemini 3 Flash Preview ၏ Multimodal စွမ်းရည်ကို အသုံးပြုခြင်း
+        prompt = f"Read this news in a professional Burmese voice: Write a 1-minute news story about {topic} in Burmese."
+        
+        audio_fn = "gemini_voice.mp3"
+        # Gemini native speech generation logic (Preview API)
+        response = client.models.generate_content(
+            model="gemini-3-flash-preview",
+            contents=prompt,
+            config={"speech_config": {"voice_config": {"prebuilt_voice_config": {"voice_name": "Aoede"}}}}
+        )
+        
+        # အသံဖိုင်ကို သိမ်းဆည်းခြင်း
+        with open(audio_fn, "wb") as f:
+            f.write(response.audio) # Gemini ကနေ တိုက်ရိုက်ပြန်ပေးတဲ့ audio data
 
-async def generate_audio_safe(text, filename):
-    """Voice ၂ မျိုးစလုံးဖြင့် ၅ ကြိမ်အထိ အပြင်းအထန် ပြန်ကြိုးစားပေးမည့် logic"""
-    voices = ["my-MM-NanDaNeural", "my-MM-ThihaNeural"]
-    clean_text = clean_for_tts(text)
-    
-    for attempt in range(5):
-        voice = voices[attempt % 2] # Voice အလှည့်ကျ ပြောင်းစမ်းခြင်း
-        try:
-            communicate = edge_tts.Communicate(clean_text, voice)
-            await communicate.save(filename)
-            
-            if os.path.exists(filename) and os.path.getsize(filename) > 1000:
-                return True
-        except Exception as e:
-            send_telegram_msg(f"⏳ TTS Attempt {attempt+1} ({voice}) failed. Retrying...")
-            await asyncio.sleep(3)
-    return False
+        # 2. သတင်းအချက်အလက် (JSON) ကို သီးသန့်ပြန်ထုတ်ယူခြင်း
+        data_prompt = f"Summarize the previous news into a search keyword for images. Return ONLY JSON: {{\"query\": \"keyword\"}}"
+        data_res = client.models.generate_content(model="gemini-3-flash-preview", contents=data_prompt)
+        data = json.loads(data_res.text.replace("```json", "").replace("```", "").strip())
 
-async def create_one_minute_video(topic):
-    try:
-        data = await get_news_data(topic)
-        if not data: return None
-        
-        audio_fn = f"news_audio_{int(time.time())}.mp3"
-        
-        # အသံဖိုင်ရအောင် အသေအချာ လုပ်ဆောင်ခြင်း
-        if not await generate_audio_safe(data['news'], audio_fn):
-            send_telegram_msg("❌ TTS Error: Microsoft Server နှင့် ချိတ်ဆက်၍ မရပါ။")
-            return None
-        
-        # 2. Pexels Image Fetching
+        # 3. Pexels Image Fetching
         headers = {"Authorization": PEXELS_API_KEY}
-        img_res = requests.get(f"https://api.pexels.com/v1/search?query={data['query']}&per_page=6", headers=headers).json()
+        img_res = requests.get(f"https://api.pexels.com/v1/search?query={data['query']}&per_page=5", headers=headers).json()
         
         if 'photos' not in img_res or not img_res['photos']: return None
 
-        # 3. Processing
+        # 4. Video Production
         audio_clip = AudioFileClip(audio_fn)
         img_paths = []
         for i, p in enumerate(img_res['photos']):
             img_data = requests.get(p['src']['large2x']).content
             path = f"img_{i}.jpg"
-            with open(path, 'wb') as f: f.write(img_data)
+            with open(path, "wb") as f: f.write(img_data)
             img_paths.append(path)
 
         duration = audio_clip.duration / len(img_paths)
         clips = [ImageClip(m).set_duration(duration).resize(width=1280) for m in img_paths]
         
-        output_fn = "Final_One_Minute.mp4"
-        final_video = concatenate_videoclips(clips, method="compose").set_audio(audio_clip).set_size((1280, 720))
+        output_fn = "Gemini_Native_News.mp4"
+        # 'CompositeVideoClip' error အတွက် set_size အစား size parameter ကို သုံးထားပါတယ်
+        final_video = concatenate_videoclips(clips, method="compose").set_audio(audio_clip)
         final_video.write_videofile(output_fn, fps=24, codec="libx264", audio_codec="aac", logger=None)
         
         audio_clip.close()
         final_video.close()
         return output_fn
+
     except Exception as e:
-        send_telegram_msg(f"❌ Production Error: {str(e)}")
+        send_telegram_msg(f"❌ Gemini Voice Error: {str(e)}")
         return None
 
 async def run_engine():
-    send_telegram_msg("🚀 1-Minute Production: Advanced TTS & Resize Fix Active...")
-    video = await create_one_minute_video("Advancement of AI in 2026")
+    send_telegram_msg("🚀 Starting Production with Gemini 3 Native Voice...")
+    video = await create_news_with_gemini_voice("Future of Tech in Myanmar 2026")
     if video:
-        send_telegram_msg(f"✅ Success! 1-Minute Video is Ready: {video}")
+        send_telegram_msg(f"✅ Success! Gemini Voice Video Ready: {video}")
 
 if __name__ == "__main__":
     asyncio.run(run_engine())
