@@ -4,14 +4,14 @@ import requests
 import nest_asyncio
 import json
 import time
+import re
 from google import genai
-from google.api_core import exceptions
 import edge_tts
 from moviepy.editor import VideoFileClip, ImageClip, AudioFileClip, concatenate_videoclips
 
 nest_asyncio.apply()
 
-# --- Configuration (GitHub Secrets မှသာ ဆွဲသုံးပါသည်) ---
+# --- Configuration ---
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -26,98 +26,89 @@ def send_telegram_msg(message):
         requests.post(url, data={'chat_id': TELEGRAM_CHAT_ID, 'text': message}, timeout=15)
     except: pass
 
-async def get_news_data_with_retry(topic, retries=3, delay=10):
-    """503 Error အတွက် အလိုအလျောက် ပြန်ကြိုးစားပေးမည့် Function"""
-    prompt = f"Write a professional news script about {topic} in Burmese for 2026. Return ONLY JSON: {{\"news\": \"text\", \"query\": \"keyword\"}}"
-    
-    for i in range(retries):
-        try:
-            # gemini-3-flash-preview model အား အသုံးပြုခြင်း
-            response = client.models.generate_content(model="gemini-3-flash-preview", contents=prompt)
-            clean_text = response.text.replace("```json", "").replace("```", "").strip()
-            return json.loads(clean_text)
-        except Exception as e:
-            if "503" in str(e) or "Service Unavailable" in str(e):
-                send_telegram_msg(f"⏳ Server Busy (Attempt {i+1}/{retries}). Waiting {delay}s...")
-                await asyncio.sleep(delay)
-                continue
-            send_telegram_msg(f"❌ Gemini Error: {str(e)}")
-            return None
-    return None
+def clean_text_for_tts(text):
+    """မြန်မာစာသားမှ မလိုအပ်သော သင်္ကေတများ ရှင်းလင်းရန်"""
+    # edge-tts error မတက်အောင် အထူးသင်္ကေတများကို ဖယ်ရှားပါသည်
+    clean = re.sub(r'[*#_`]', '', text) 
+    return clean
 
-async def create_segment(topic):
+async def get_news_data(topic):
+    # Gemini 3 Flash Preview အား JSON ထုတ်ခိုင်းခြင်း
+    prompt = f"Write a professional 1-minute news story about {topic} in Burmese. JSON only: {{\"news\": \"text content\", \"query\": \"english keyword\"}}"
     try:
-        data = await get_news_data_with_retry(topic)
+        response = client.models.generate_content(model="gemini-3-flash-preview", contents=prompt)
+        clean_text = response.text.replace("```json", "").replace("```", "").strip()
+        return json.loads(clean_text)
+    except Exception as e:
+        send_telegram_msg(f"❌ Gemini Error: {str(e)}")
+        return None
+
+async def create_one_minute_video(topic):
+    try:
+        data = await get_news_data(topic)
         if not data: return None
         
-        # 1. TTS
-        audio_fn = f"audio_{int(time.time())}.mp3"
-        await edge_tts.Communicate(data['news'], "my-MM-NanDaNeural").save(audio_fn)
+        # 1. အသံဖိုင် ထုတ်ခြင်း (TTS)
+        audio_fn = "test_audio.mp3"
+        tts_text = clean_text_for_tts(data['news'])
         
-        # 2. Pexels
-        headers = {"Authorization": PEXELS_API_KEY}
-        img_res = requests.get(f"https://api.pexels.com/v1/search?query={data['query']}&per_page=5", headers=headers).json()
+        # အသံနှုန်းကို အနည်းငယ် လျှော့ထားပါသည်
+        communicate = edge_tts.Communicate(tts_text, "my-MM-NanDaNeural", rate="-5%")
+        await communicate.save(audio_fn)
         
-        if 'photos' not in img_res or not img_res['photos']: return None
+        if not os.path.exists(audio_fn) or os.path.getsize(audio_fn) < 500:
+            send_telegram_msg("❌ TTS Failed: အသံဖိုင် မထွက်လာပါ။")
+            return None
 
+        # 2. ပုံရှာဖွေခြင်း (Pexels)
+        headers = {"Authorization": PEXELS_API_KEY}
+        img_res = requests.get(f"https://api.pexels.com/v1/search?query={data['query']}&per_page=6", headers=headers).json()
+        
+        if 'photos' not in img_res or not img_res['photos']:
+            send_telegram_msg(f"⚠️ ပုံရှာမတွေ့ပါ: {data['query']}")
+            return None
+
+        # 3. ဗီဒီယို ဖန်တီးခြင်း
         audio_clip = AudioFileClip(audio_fn)
         img_paths = []
         for i, p in enumerate(img_res['photos']):
             img_data = requests.get(p['src']['large2x']).content
-            path = f"img_{i}_{int(time.time())}.jpg"
+            path = f"test_img_{i}.jpg"
             with open(path, 'wb') as f: f.write(img_data)
             img_paths.append(path)
 
         duration = audio_clip.duration / len(img_paths)
         clips = [ImageClip(m).set_duration(duration).resize(width=1280).set_position("center") for m in img_paths]
         
-        output_fn = f"seg_{int(time.time())}.mp4"
-        segment_video = concatenate_videoclips(clips, method="compose").set_audio(audio_clip).set_size((1280, 720))
-        segment_video.write_videofile(output_fn, fps=24, codec="libx264", audio_codec="aac", logger=None)
+        final_video = concatenate_videoclips(clips, method="compose").set_audio(audio_clip).set_size((1280, 720))
+        output_fn = "One_Minute_Test.mp4"
+        final_video.write_videofile(output_fn, fps=24, codec="libx264", audio_codec="aac", logger=None)
         
         audio_clip.close()
-        segment_video.close()
+        final_video.close()
         return output_fn
     except Exception as e:
-        send_telegram_msg(f"❌ Segment Error: {str(e)}")
+        send_telegram_msg(f"❌ Production Error: {str(e)}")
         return None
 
-async def run_news_engine():
+async def run_single_test():
     try:
-        send_telegram_msg("🚀 Engine Active: Gemini 3 Flash Production Starting...")
-        topics = ["Myanmar Tech News 2026", "Global Economy Update"]
+        send_telegram_msg("🚀 Starting 1-Minute Single Test (Gemini 3 Flash)...")
         
-        yt_segs = []
-        for t in topics:
-            seg = await create_segment(t)
-            if seg: yt_segs.append(seg)
-            await asyncio.sleep(5)
-
-        if yt_segs:
-            video_clips = [VideoFileClip(s) for s in yt_segs]
-            if os.path.exists(YT_INTRO_FILE):
-                video_clips.insert(0, VideoFileClip(YT_INTRO_FILE).resize((1280, 720)))
-            
-            final_name = "Final_News_2026.mp4"
-            final = concatenate_videoclips(video_clips, method="compose")
-            final.write_videofile(final_name, codec="libx264", audio_codec="aac")
-            
-            # Telegram သို့ ပို့ရန် logic (လိုအပ်လျှင် send_telegram_video ကို ပြန်သုံးနိုင်သည်)
-            send_telegram_msg(f"✅ Production Finished: {final_name}")
-            
-            final.close()
-            for v in video_clips: v.close()
-            # Cleanup
-            for f in os.listdir():
-                if any(ext in f for ext in [".mp3", ".jpg", ".mp4"]) and f != YT_INTRO_FILE:
-                    try: os.remove(f)
-                    except: pass
+        # စမ်းသပ်ရန် ခေါင်းစဉ် တစ်ခုတည်းသာ ထားပါသည်
+        topic = "Future of AI in Southeast Asia 2026"
+        
+        video_file = await create_one_minute_video(topic)
+        
+        if video_file:
+            send_telegram_msg(f"✅ Success! 1-Minute Video Created: {video_file}")
+            # Delivery logic ကို GitHub Actions artifacts ထဲမှာ သွားစစ်နိုင်ပါတယ်
         else:
-            send_telegram_msg("❌ No segments were created due to high server demand.")
+            send_telegram_msg("❌ Failed to create video segment.")
                 
     except Exception as e:
         send_telegram_msg(f"❌ Fatal Error: {str(e)}")
 
 if __name__ == "__main__":
-    asyncio.run(run_news_engine())
+    asyncio.run(run_single_test())
 
