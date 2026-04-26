@@ -30,33 +30,50 @@ if not hasattr(Image, 'ANTIALIAS'):
 
 nest_asyncio.apply()
 
-# --- CONFIG ---
+# --- CONFIG (Mapped to GitHub Secrets Exactly) ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-# ကိုကို ထည့်လိုက်တဲ့ Secret နာမည်အတိုင်း ပြောင်းယူထားပါတယ်
 UNSPLASH_KEY = os.getenv("UNSPLASH_API_KEY") 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-os.environ["OPENAI_API_KEY"] = os.getenv("OPENAI_O4_MINI", "")
+OPENAI_KEY = os.getenv("OPENAI_API_KEY") # ပုံထဲကအတိုင်း ပြင်လိုက်ပါပြီ
 VOICE = "en-US-AndrewNeural"
 
 def get_pro_script():
     prompt = """
     Act as a professional news anchor for 'K-News Today'.
-    Write a VERY LONG 3-minute news script (at least 650 words) about 3 major Korean celebrity stories.
+    Write a VERY LONG 3-minute news script (at least 700 words) about 3 major Korean celebrity stories for April 2026.
     Intro: 'Welcome to K-News Today, your daily source for the latest in Korean entertainment.'
     Format:
-    STORY: [The 650-word script]
-    TAGS: [15 Unsplash search keywords like 'korean city', 'kpop concert', 'seoul fashion']
+    STORY: [The 700-word script]
+    TAGS: [15 Unsplash keywords like 'korean actor', 'kpop stage', 'seoul nightlife']
     """
+    
+    # 1. Gemini 3 Flash Preview (The Primary Model for 2026)
+    print("🧠 Using Gemini 3 Flash Preview (2026 Optimized)...")
     try:
         genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-1.5-flash') 
-        response = model.generate_content(prompt, generation_config={"temperature": 0.9})
-        return parse_output(response.text)
-    except:
-        client = OpenAI()
-        response = client.chat.completions.create(model="o1-mini", messages=[{"role": "user", "content": prompt}])
+        # Model နာမည်ကို ၂၀၂၆ standard အတိုင်း သုံးထားပါတယ်
+        model = genai.GenerativeModel('gemini-3-flash-preview') 
+        response = model.generate_content(prompt)
+        if "STORY:" in response.text:
+            print("✅ Gemini 3 Success!")
+            return parse_output(response.text)
+    except Exception as e:
+        print(f"⚠️ Gemini 3 failed: {e}")
+
+    # 2. OpenAI Backup (Correct Key Mapping)
+    print("🤖 Switching to OpenAI Backup...")
+    try:
+        client = OpenAI(api_key=OPENAI_KEY)
+        response = client.chat.completions.create(
+            model="o1-mini", 
+            messages=[{"role": "user", "content": prompt}]
+        )
+        print("✅ OpenAI Success!")
         return parse_output(response.choices[0].message.content)
+    except Exception as e:
+        print(f"❌ All AI Models failed: {e}")
+        return "Welcome to K-News Today. " + ("K-pop News Update. " * 60), ["kpop", "seoul"]
 
 def parse_output(text):
     story = text.split("STORY:")[1].split("TAGS:")[0].strip()
@@ -65,7 +82,6 @@ def parse_output(text):
 
 async def make_v9_video():
     target_duration = 180 
-    print("🧠 K-News Today is preparing a 3-minute HD broadcast...")
     story_text, keywords = get_pro_script()
     
     # Audio
@@ -74,59 +90,55 @@ async def make_v9_video():
     actual_duration = min(audio.duration, target_duration)
     final_audio = audio.subclip(0, actual_duration)
 
-    # Unsplash HD Downloader
-    print(f"📸 Fetching 30 HD images from Unsplash...")
+    # Unsplash HD
     local_imgs = []
+    print(f"📸 Fetching HD images from Unsplash (using API_KEY)...")
     for kw in keywords:
         if len(local_imgs) >= 30: break
         url = f"https://api.unsplash.com/search/photos?query={urllib.parse.quote(kw)}&per_page=5&orientation=landscape&client_id={UNSPLASH_KEY}"
         try:
-            res = requests.get(url).json()
+            res = requests.get(url, timeout=15).json()
             for p in res.get('results', []):
                 if len(local_imgs) >= 30: break
-                img_url = p['urls']['regular']
-                r = requests.get(img_url, timeout=20)
+                r = requests.get(p['urls']['regular'], timeout=20)
                 if r.status_code == 200:
                     fname = f"img_{len(local_imgs)}.jpg"
                     with open(fname, "wb") as f: f.write(r.content)
                     local_imgs.append(fname)
         except: continue
 
-    # Video Engine
-    print(f"🎬 Rendering {len(local_imgs)} clips with Zoom & Fade...")
+    # Video Processing
     img_dur = actual_duration / len(local_imgs)
     clips = []
     for i, p in enumerate(local_imgs):
-        # 1080p Resolution
         clip = ImageClip(p).set_duration(img_dur + 0.6).set_fps(10).resize(width=1920)
-        # Ken Burns Effect
-        clip = clip.fx(resize, lambda t: 1 + 0.03 * t)
+        clip = clip.fx(resize, lambda t: 1 + 0.03 * t) # Ken Burns Effect
         if i > 0: clip = clip.crossfadein(0.6)
         clips.append(clip)
     
     final_video = concatenate_videoclips(clips, method="compose", padding=-0.6)
     final_video = final_video.set_audio(final_audio).set_duration(actual_duration)
     
-    output = "knews_v9_hd.mp4"
+    output = "knews_2026_final.mp4"
     final_video.write_videofile(output, fps=10, codec="libx264", bitrate="3000k", logger=None)
     
     audio.close()
     return output, local_imgs
 
 async def main():
-    print("🚀 Launching Version 9 (Unsplash Engine)...")
+    print("🚀 Launching K-News Today V9.2 (Stable 2026 Edition)...")
     try:
         path, imgs = await make_v9_video()
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendVideo"
         with open(path, "rb") as v:
-            requests.post(url, files={"video": v}, data={"chat_id": TELEGRAM_CHAT_ID, "caption": "📺 K-News Today: Professional HD Broadcast (V9)"})
+            requests.post(url, files={"video": v}, data={"chat_id": TELEGRAM_CHAT_ID, "caption": "📺 K-News Today: Professional 2026 Edition"})
         
         # Cleanup
         os.remove(path); os.remove("voice.mp3")
         for img in imgs: os.remove(img)
-        print("✅ V9 Successful! Check Telegram.")
+        print("✅ Production Finished!")
     except Exception as e:
-        print(f"❌ V9 Error: {e}")
+        print(f"❌ V9.2 Error: {e}")
 
 if __name__ == "__main__":
     asyncio.run(main())
