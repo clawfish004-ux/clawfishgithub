@@ -9,107 +9,92 @@ from PIL import Image
 
 nest_asyncio.apply()
 
-if not hasattr(Image, 'ANTIALIAS'):
-    Image.ANTIALIAS = Image.Resampling.LANCZOS
-
 # --- CONFIG ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
 VOICE = "en-US-AndrewNeural"
 
-STORY_DATA = {
-    "title": "K-Update Daily (2-Minute Edition)",
-    "scenes": [
-        {"text": "Breaking news: BTS solo project rumors are taking over social media.", "query": "kpop group stage"},
-        {"text": "The latest K-drama hit is breaking records on global streaming platforms.", "query": "korean drama movie"},
-        {"text": "Lim Young-woong maintains his top spot on music charts for weeks.", "query": "korean singer"},
-        {"text": "Blackpink members spotted together, sparking comeback rumors.", "query": "kpop stars red carpet"},
-        {"text": "Top Korean actors confirmed for a new high-budget action series.", "query": "korean actor handsome"},
-        {"text": "New fashion trends from Seoul are influencing global markets this year.", "query": "korean fashion style"},
-        {"text": "A famous celebrity couple announces their wedding date officially.", "query": "korean wedding"},
-        {"text": "Fan meetings are back in full swing across major Asian cities.", "query": "fan meeting audience"},
-    ]
-}
+# သတင်းတစ်ပုဒ်စာ စာသား (၁ မိနစ်စာအတွက်)
+STORY_TEXT = """
+Welcome to your daily K-Entertainment update. Today's main story focuses on the 
+extraordinary global success of South Korean artists in 2026. From record-breaking 
+music charts to massive worldwide tours, K-pop continues to influence the world. 
+Stay tuned as we bring you more exclusive news and behind-the-scenes updates 
+from your favorite idols and actors. Thank you for watching.
+"""
 
-def get_pexels_images(query, count=3):
+def get_pexels_images(query):
     headers = {"Authorization": PEXELS_API_KEY}
-    url = f"https://api.pexels.com/v1/search?query={urllib.parse.quote(query)}&per_page={count}&orientation=landscape"
+    # ပုံ ၆ ပုံပဲ ယူပါမယ်
+    url = f"https://api.pexels.com/v1/search?query={urllib.parse.quote(query)}&per_page=6&orientation=landscape"
     try:
-        res = requests.get(url, headers=headers, timeout=15).json()
-        return [p['src']['large2x'] for p in res.get('photos', [])]
+        res = requests.get(url, headers=headers, timeout=10).json()
+        # Medium size က Render လုပ်ရတာ အမြန်ဆုံးပါ
+        return [p['src']['medium'] for p in res.get('photos', [])]
     except:
         return []
 
-async def make_2min_knews_video():
-    target_duration = 120 # 2 Minutes
+async def make_light_video():
+    target_duration = 60 # ၁ မိနစ် (စက္ကန့် ၆၀)
     
-    # 1. AUDIO GENERATION
-    full_script = ". ".join([s['text'] for s in STORY_DATA['scenes']])
-    # ၂ မိနစ် ပြည့်အောင် script ကို ၂ ခါ ပတ်ခိုင်းပါမယ်
-    extended_script = (full_script + " ") * 2
+    # 1. Audio Generation
+    audio_file = "news_1min.mp3"
+    print("🎙️ Generating Audio...")
+    await edge_tts.Communicate(STORY_TEXT, VOICE).save(audio_file)
     
-    audio_file = "knews_2min.mp3"
-    print("🎙️ Generating 2-minute Audio...")
-    await edge_tts.Communicate(extended_script, VOICE).save(audio_file)
+    audio = AudioFileClip(audio_file)
+    # အသံကို စက္ကန့် ၆၀ ပြည့်အောင် loop ပတ်မယ် (သို့မဟုတ်) လိုသလောက်ယူမယ်
+    if audio.duration < target_duration:
+        # အသံတိုနေရင် စာသားထပ်ပေါင်းပြီး ပြန်ထုတ်ပါမယ်
+        await edge_tts.Communicate(STORY_TEXT * 2, VOICE).save(audio_file)
+        audio = AudioFileClip(audio_file)
     
-    audio = AudioFileClip(audio_file).subclip(0, target_duration)
+    audio = audio.subclip(0, target_duration)
     
-    # 2. IMAGE FETCHING
-    print("📸 Fetching Images for 2 minutes...")
-    all_image_urls = []
-    for scene in STORY_DATA['scenes']:
-        all_image_urls.extend(get_pexels_images(scene['query']))
-    
-    if not all_image_urls:
-        all_image_urls = get_pexels_images("korea kpop", count=10)
-    
-    if not all_image_urls:
-        print("❌ Error: No images found.")
-        return None
-
-    # 3. CLIP CREATION
-    sec_per_img = target_duration / len(all_image_urls)
+    # 2. Image Fetching
+    print("📸 Fetching Images...")
+    all_urls = get_pexels_images("kpop idol performance")
+    if not all_urls:
+        all_urls = ["https://images.pexels.com/photos/2307221/pexels-photo-2307221.jpeg"]
+        
+    # 3. Clip Creation
+    sec_per_img = target_duration / len(all_urls)
     clips = []
-    overlap = 0.8
     
-    print(f"🎬 Creating clips for {len(all_image_urls)} images...")
-    for url in all_image_urls:
-        try:
-            img_clip = (ImageClip(url)
-                        .set_duration(sec_per_img + overlap)
-                        .resize(lambda t: 1 + 0.04 * t) # Zoom Effect
-                        .set_fps(24)
-                        .resize(newsize=(640, 360))
-                        .crossfadein(overlap))
-            clips.append(img_clip)
-        except:
-            continue
+    for url in all_urls:
+        # FPS ကို ၈ ပဲထားပြီး Render ကို ပေါ့ပါးအောင်လုပ်မယ်
+        img_clip = ImageClip(url).set_duration(sec_per_img).resize(newsize=(640, 360)).set_fps(8)
+        clips.append(img_clip)
+        
+    # 4. Final Video Construction
+    print("🎬 Stitching video parts...")
+    video = concatenate_videoclips(clips, method="chain")
+    video = video.set_audio(audio)
     
-    if not clips: return None
-
-    # 4. CONCATENATE
-    video = concatenate_videoclips(clips, method="compose", padding=-overlap)
-    video = video.set_duration(target_duration).set_audio(audio)
-    
-    output = "knews_2min.mp4"
-    video.write_videofile(output, fps=24, codec="libx264", audio_codec="aac", bitrate="1000k", logger=None)
+    output = "knews_1min.mp4"
+    # Bitrate ကို လျှော့ချပြီး Render မြန်အောင် လုပ်မယ်
+    video.write_videofile(output, fps=8, codec="libx264", bitrate="600k", threads=4, logger=None)
     
     audio.close()
     return output
 
 async def main():
-    print("🚀 Starting 2-Minute Production...")
+    print("🚀 Starting 1-Minute Production...")
     try:
-        video_path = await make_2min_knews_video()
-        if video_path and os.path.exists(video_path):
+        path = await make_light_video()
+        if os.path.exists(path):
+            print("📤 Sending to Telegram...")
             url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendVideo"
-            with open(video_path, "rb") as v:
-                requests.post(url, files={"video": v}, data={"chat_id": TELEGRAM_CHAT_ID, "caption": "🎬 K-News Daily (2-Minute Edition)"})
-            os.remove(video_path)
-            print("✅ 2-Minute Video Sent!")
+            with open(path, "rb") as v:
+                requests.post(url, files={"video": v}, data={"chat_id": TELEGRAM_CHAT_ID, "caption": "🎬 1-Minute K-News (Daily)"})
+            
+            # Cleanup
+            os.remove(path)
+            if os.path.exists("news_1min.mp3"): os.remove("news_1min.mp3")
+            print("✅ Done!")
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"❌ Error Detail: {e}")
 
 if __name__ == "__main__":
     asyncio.run(main())
