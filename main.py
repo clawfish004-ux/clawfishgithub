@@ -9,7 +9,6 @@ from PIL import Image
 
 nest_asyncio.apply()
 
-# --- PIL FIXED ---
 if not hasattr(Image, 'ANTIALIAS'):
     Image.ANTIALIAS = Image.Resampling.LANCZOS
 
@@ -19,98 +18,113 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
 VOICE = "en-US-AndrewNeural"
 
-# ၄ မိနစ်စာအတွက် သတင်းခေါင်းစဉ်များစွာ ထည့်ထားပါတယ်
 STORY_DATA = {
-    "title": "K-Entertainment Mega Update (4-Minute Special)",
+    "title": "K-Entertainment Daily Update",
     "scenes": [
-        {"text": "Breaking news: BTS V and RM's solo comeback rumors spark global excitement.", "query": "kpop star stage performance"},
-        {"text": "The latest K-drama 'Eternal Love' breaks all-time viewership records on its first week.", "query": "korean drama cinema lighting"},
-        {"text": "Lim Young-woong continues to dominate music charts for a record-breaking month.", "query": "korean singer concert microphone"},
-        {"text": "Blackpink members seen together at a private event, fueling group comeback theories.", "query": "kpop idols red carpet fashion"},
-        {"text": "Popular actor Lee Min-ho confirms lead role in an upcoming Netflix sci-fi series.", "query": "handsome korean actor professional"},
-        {"text": "Behind the scenes of the most expensive K-drama ever produced in Jeju Island.", "query": "jeju island scenic filming location"},
-        {"text": "Song Hye-kyo wins best actress at the international awards ceremony tonight.", "query": "korean actress award ceremony dress"},
-        {"text": "Trending: How K-beauty products are taking over the US and European markets.", "query": "korean beauty skin care products"},
-        {"text": "New idol group 'Supernova' debuts with a massive fan following in Seoul.", "query": "seoul city night lights kpop"},
-        {"text": "Analysis: Why K-Entertainment is the most influential cultural force in 2026.", "query": "korean culture high quality background"}
+        {"text": "Breaking news: BTS solo comeback rumors spark excitement.", "query": "kpop stage"},
+        {"text": "The latest K-drama Eternal Love breaks records.", "query": "korean drama"},
+        {"text": "Lim Young-woong dominates music charts again.", "query": "korean singer"},
+        {"text": "Blackpink members seen together at a private event.", "query": "kpop idol"},
+        {"text": "Actor Lee Min-ho confirms lead role in new series.", "query": "korean actor"},
+        {"text": "Behind the scenes of the most expensive K-drama.", "query": "movie set"},
+        {"text": "Song Hye-kyo wins best actress at global awards.", "query": "red carpet"},
+        {"text": "Trending: K-beauty products taking over the world.", "query": "skincare"},
+        {"text": "New idol group debuts with massive fan following.", "query": "seoul night"},
+        {"text": "Why K-culture is the most influential force in 2026.", "query": "korea fashion"}
     ]
 }
 
-# --- 1. PEXELS IMAGE FETCH ---
-def get_pexels_images(query, count=4):
+def get_pexels_images(query, count=5):
     headers = {"Authorization": PEXELS_API_KEY}
-    url = f"https://api.pexels.com/v1/search?query={query}&per_page={count}&orientation=landscape"
+    # Query ကို ပိုရှင်းအောင် encode လုပ်ပါတယ်
+    url = f"https://api.pexels.com/v1/search?query={urllib.parse.quote(query)}&per_page={count}&orientation=landscape"
     try:
-        res = requests.get(url, headers=headers).json()
-        return [p['src']['large2x'] for p in res.get('photos', [])]
-    except:
+        res = requests.get(url, headers=headers, timeout=15).json()
+        urls = [p['src']['large2x'] for p in res.get('photos', [])]
+        print(f"🔍 Found {len(urls)} images for '{query}'")
+        return urls
+    except Exception as e:
+        print(f"⚠️ Pexels Error for '{query}': {e}")
         return []
 
-# --- 2. VIDEO ENGINE ---
 async def make_long_knews_video():
+    target_duration = 240 # 4 Minutes
+    
+    # 1. AUDIO GENERATION
     full_script = ". ".join([s['text'] for s in STORY_DATA['scenes']])
-    # ၄ မိနစ် (၂၄၀ စက္ကန့်) ပြည့်အောင် စာသားကို ၃ ခါလောက် ထပ်ခါဖတ်ခိုင်းပါမယ်
-    extended_script = (full_script + " ") * 3 
+    # ၄ မိနစ် ပြည့်အောင် စာသားကို ချိန်ညှိပါတယ်
+    words = full_script.split()
+    needed_words = 150 * 4 # တစ်မိနစ် ၁၅၀ လုံးနှုန်းနဲ့ တွက်ထားပါတယ်
+    extended_script = (full_script + " ") * (needed_words // len(words) + 1)
     
     audio_file = "long_knews.mp3"
     print("🎙️ Generating 4-minute Audio...")
     await edge_tts.Communicate(extended_script, VOICE).save(audio_file)
     
-    audio = AudioFileClip(audio_file)
-    # အကယ်၍ audio က ၄ မိနစ်ထက် ကျော်ရင် ဖြတ်လိုက်မယ်၊ လိုရင် ထပ်ဖြည့်မယ်
-    target_duration = 240 # 4 Minutes
-    audio = audio.subclip(0, target_duration)
+    audio = AudioFileClip(audio_file).subclip(0, target_duration)
     
-    print(f"📸 Fetching Images to match {target_duration} seconds...")
-    
-    # ပုံ ၄၀ လောက် သုံးပါမယ် (တစ်ပုံကို ၆ စက္ကန့်နှုန်း)
-    all_images = []
+    # 2. IMAGE FETCHING
+    print("📸 Fetching Images...")
+    all_image_urls = []
     for scene in STORY_DATA['scenes']:
-        all_images.extend(get_pexels_images(scene['query'], count=4))
+        all_image_urls.extend(get_pexels_images(scene['query']))
     
-    if not all_images:
-        print("Error: No images found.")
+    # ပုံ လုံးဝ ရှာမတွေ့ရင် fallback အနေနဲ့ ပုံသေ query တစ်ခုနဲ့ ထပ်ရှာမယ်
+    if not all_image_urls:
+        all_image_urls = get_pexels_images("korea kpop", count=10)
+    
+    # အခုမှ ပုံမရှိရင်တော့ ရပ်ပါမယ်
+    if not all_image_urls:
+        print("❌ Error: Absolutely no images found. Check API Key.")
         return None
 
-    sec_per_img = target_duration / len(all_images)
-    clips = []
+    # 3. CLIP CREATION
+    # ပုံအရေအတွက် ဘယ်လောက်ပဲရရ ၄ မိနစ်ပြည့်အောင် တွက်ချက်ပါတယ်
+    sec_per_img = target_duration / len(all_image_urls)
+    # တစ်ပုံကို အရမ်းမကြာအောင် ညှိပါတယ် (အများဆုံး ၁၀ စက္ကန့်)
+    if sec_per_img > 10: sec_per_img = 10
     
-    for img_url in all_images:
+    clips = []
+    overlap = 0.8
+    
+    print(f"🎬 Creating clips for {len(all_image_urls)} images...")
+    for url in all_image_urls:
         try:
-            img_clip = (ImageClip(img_url)
-                        .set_duration(sec_per_img)
-                        .resize(lambda t: 1 + 0.03 * t) # Slow & Smooth Zoom
+            img_clip = (ImageClip(url)
+                        .set_duration(sec_per_img + overlap)
+                        .resize(lambda t: 1 + 0.03 * t)
                         .set_fps(24)
                         .resize(newsize=(640, 360))
-                        .crossfadein(0.8))
+                        .crossfadein(overlap))
             clips.append(img_clip)
-        except:
+        except Exception as e:
             continue
-            
-    print("🎬 Stitching video clips together...")
-    video = concatenate_videoclips(clips, method="compose", padding=-0.8)
-    video = video.set_audio(audio)
+    
+    if not clips: return None
+
+    # 4. CONCATENATE
+    video = concatenate_videoclips(clips, method="compose", padding=-overlap)
+    # ဗီဒီယိုကြာချိန်ကို အသံနဲ့ ကွက်တိဖြစ်အောင် ညှိပါတယ်
+    video = video.set_duration(target_duration).set_audio(audio)
     
     output = "knews_4min.mp4"
-    video.write_videofile(output, fps=24, codec="libx264", audio_codec="aac", bitrate="1200k", logger=None)
+    video.write_videofile(output, fps=24, codec="libx264", audio_codec="aac", bitrate="1000k", logger=None)
     
     audio.close()
     return output
 
-# --- MAIN ---
 async def main():
-    print("🚀 Starting 4-Minute K-News Production...")
-    video_path = await make_long_knews_video()
-    
-    if video_path and os.path.exists(video_path):
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendVideo"
-        with open(video_path, "rb") as v:
-            requests.post(url, files={"video": v}, data={"chat_id": TELEGRAM_CHAT_ID, "caption": "🎬 K-Entertainment Mega Update\nDuration: 4:00 Minutes"})
-        
-        # Cleanup
-        os.remove(video_path)
-        if os.path.exists("long_knews.mp3"): os.remove("long_knews.mp3")
-        print("✅ 4-Minute Video Sent Successfully!")
+    print("🚀 Starting 4-Minute Production...")
+    try:
+        video_path = await make_long_knews_video()
+        if video_path and os.path.exists(video_path):
+            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendVideo"
+            with open(video_path, "rb") as v:
+                requests.post(url, files={"video": v}, data={"chat_id": TELEGRAM_CHAT_ID, "caption": "🎬 4-Minute K-News Update"})
+            os.remove(video_path)
+            print("✅ Done!")
+    except Exception as e:
+        print(f"❌ Main Loop Error: {e}")
 
 if __name__ == "__main__":
     asyncio.run(main())
