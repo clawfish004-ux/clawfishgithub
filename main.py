@@ -39,14 +39,22 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 OPENAI_KEY = os.getenv("OPENAI_API_KEY") 
 VOICE = "en-US-AndrewNeural"
 
-def get_pro_script():
+def get_k_entertainment_script():
     prompt = """
-    Act as a professional news anchor for 'K-News Today'.
-    Write a 3-minute news script about 3 Korean celebrity stories.
-    Intro: 'Welcome to K-News Today, your daily source for the latest in Korean entertainment.'
-    Provide 15 keywords. Format: STORY: [Content] TAGS: [Keywords]
+    Act as a professional K-News anchor for 'K-News Today'.
+    Write a 3-minute detailed news script (700 words) about 3 SPECIFIC topics:
+    1. A trending K-Drama or TV Series in 2026.
+    2. A major K-Pop comeback or concert news (BTS, Blackpink, or NewJeans).
+    3. News about a famous Korean actor or actress.
+    
+    STRICT RULE FOR IMAGES: Provide 20 keywords focusing on PEOPLE.
+    Use keywords like: 'Korean actor on stage', 'Kpop idol dancing', 'Beautiful Korean woman portrait', 'Korean man fashion model', 'K-Drama filming set with people'.
+    
+    Format:
+    STORY: [The 700-word script]
+    TAGS: [kw1, kw2, ..., kw20]
     """
-    print("🧠 Using Gemini 3 Flash Preview...")
+    print("🧠 Gemini 3 Flash is writing K-Entertainment news...")
     try:
         genai.configure(api_key=GEMINI_API_KEY)
         model = genai.GenerativeModel('gemini-3-flash-preview') 
@@ -62,9 +70,9 @@ def parse_output(text):
     tags = text.split("TAGS:")[1].strip().replace("[","").replace("]","").split(",")
     return story, [t.strip() for t in tags]
 
-async def make_v9_5_video():
+async def make_v9_7_video():
     target_duration = 180 
-    story_text, keywords = get_pro_script()
+    story_text, keywords = get_k_entertainment_script()
     
     await edge_tts.Communicate(story_text, VOICE).save("voice.mp3")
     audio = AudioFileClip("voice.mp3")
@@ -72,76 +80,70 @@ async def make_v9_5_video():
     final_audio = audio.subclip(0, actual_duration)
 
     local_imgs = []
-    headers = {"Authorization": f"Client-ID {UNSPLASH_KEY}"}
-    p_headers = {"Authorization": PEXELS_KEY}
-
-    # Dual-Engine Image Fetching
+    # Dual-Engine Fetching focusing on PEOPLE
     for kw in keywords:
-        if len(local_imgs) >= 30: break
+        if len(local_imgs) >= 35: break
         try:
-            # Try Unsplash first
-            res = requests.get(f"https://api.unsplash.com/search/photos?query={urllib.parse.quote(kw)}&per_page=3", headers=headers, timeout=5).json()
+            # Unsplash Search
+            u_headers = {"Authorization": f"Client-ID {UNSPLASH_KEY}"}
+            res = requests.get(f"https://api.unsplash.com/search/photos?query={urllib.parse.quote(kw)}&per_page=3", headers=u_headers, timeout=5).json()
             for p in res.get('results', []):
                 r = requests.get(p['urls']['regular'], timeout=10)
                 if r.status_code == 200:
                     fname = f"img_{len(local_imgs)}.jpg"
                     with open(fname, "wb") as f: f.write(r.content)
                     local_imgs.append(fname)
-            # If still low, try Pexels
+            
+            # Pexels Search (Backup)
             if len(local_imgs) < 30:
+                p_headers = {"Authorization": PEXELS_KEY}
                 pres = requests.get(f"https://api.pexels.com/v1/search?query={urllib.parse.quote(kw)}&per_page=3", headers=p_headers, timeout=5).json()
                 for p in pres.get('photos', []):
-                    r = requests.get(p['src']['large'], timeout=10)
+                    r = requests.get(p['src']['large2x'], timeout=10)
                     if r.status_code == 200:
                         fname = f"img_{len(local_imgs)}.jpg"
                         with open(fname, "wb") as f: f.write(r.content)
                         local_imgs.append(fname)
         except: continue
 
-    if not local_imgs: return None, []
+    if len(local_imgs) < 5: return None, []
 
-    # Rendering with Safe Settings
+    # Rendering Process
     img_dur = actual_duration / len(local_imgs)
-    clips = [ImageClip(p).set_duration(img_dur + 0.6).set_fps(10).resize(width=1280).fx(resize, lambda t: 1 + 0.03 * t).crossfadein(0.6) if i > 0 else ImageClip(p).set_duration(img_dur + 0.6).set_fps(10).resize(width=1280).fx(resize, lambda t: 1 + 0.03 * t) for i, p in enumerate(local_imgs)]
+    clips = []
+    for i, p in enumerate(local_imgs):
+        clip = ImageClip(p).set_duration(img_dur + 0.6).set_fps(12).resize(width=1920)
+        clip = clip.fx(resize, lambda t: 1 + 0.02 * t) 
+        if i > 0: clip = clip.crossfadein(0.6)
+        clips.append(clip)
     
     final_video = concatenate_videoclips(clips, method="compose", padding=-0.6)
     final_video = final_video.set_audio(final_audio).set_duration(actual_duration)
     
-    output = "knews_final.mp4"
-    # Bitrate ကို 2000k လောက်ပဲထားမယ် File size မကြီးအောင်
-    final_video.write_videofile(output, fps=10, codec="libx264", bitrate="2000k", audio_codec="aac", logger=None)
+    output = "knews_star_edition.mp4"
+    final_video.write_videofile(output, fps=12, codec="libx264", bitrate="3500k", audio_codec="aac", logger=None)
     
     audio.close()
     return output, local_imgs
 
 async def main():
-    print("🚀 Launching V9.5 (Debug Edition)...")
+    print("🚀 Launching V9.7 (K-Star & People Focus)...")
     try:
-        path, imgs = await make_v9_5_video()
+        path, imgs = await make_v9_7_video()
         if not path:
-            print("❌ No images found.")
+            print("❌ Failure: Could not find human-centric images.")
             return
 
-        print(f"📤 Uploading to Telegram (Chat ID: {TELEGRAM_CHAT_ID})...")
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendVideo"
         with open(path, "rb") as v:
-            response = requests.post(url, files={"video": v}, data={"chat_id": TELEGRAM_CHAT_ID, "caption": "🎬 K-News Today V9.5"})
-            
-        # Debugging Response
-        print(f"📡 Telegram Response: {response.status_code} - {response.text}")
+            requests.post(url, files={"video": v}, data={"chat_id": TELEGRAM_CHAT_ID, "caption": "📺 K-News Today: Stars, Dramas & K-Pop Special (V9.7)"})
         
-        if response.status_code != 200:
-            print("⚠️ Video failed, trying to send as Document...")
-            doc_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendDocument"
-            with open(path, "rb") as v:
-                requests.post(doc_url, files={"document": v}, data={"chat_id": TELEGRAM_CHAT_ID})
-
         os.remove(path); os.remove("voice.mp3")
         for img in imgs: os.remove(img)
-        print("✅ Finished Process.")
+        print("✅ Finished. Humans and Stars should appear now!")
     except Exception as e:
         print(f"❌ Error: {e}")
 
 if __name__ == "__main__":
     asyncio.run(main())
-    
+
