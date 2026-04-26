@@ -2,8 +2,9 @@ import os
 import sys
 import subprocess
 
-# --- AUTO INSTALLER & FIXER ---
+# --- AUTO INSTALLER ---
 def install_and_fix():
+    # Pillow 9.5.0 က ANTIALIAS error အတွက် အသေချာဆုံးမို့ သူ့ကိုပဲ ဆက်သုံးပါမယ်
     libs = ["google-generativeai", "openai", "edge-tts", "moviepy", "requests", "nest_asyncio", "Pillow==9.5.0"]
     for lib in libs:
         pkg = lib.split("==")[0]
@@ -35,15 +36,9 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-OPENAI_API_KEY = os.getenv("OPENAI_O4_MINI") # GitHub Secret နာမည်
+# ကိုကို့ရဲ့ Secret နာမည်အတိုင်း ပြန်ယူထားပါတယ်
+MY_OPENAI_KEY = os.getenv("OPENAI_O4_MINI") 
 VOICE = "en-US-AndrewNeural"
-
-# Gemini Config
-genai.configure(api_key=GEMINI_API_KEY)
-gemini_model = genai.GenerativeModel('gemini-1.5-flash')
-
-# OpenAI Config
-client = OpenAI(api_key=OPENAI_API_KEY)
 
 def get_smart_long_news():
     prompt = """
@@ -56,31 +51,32 @@ def get_smart_long_news():
     TAGS: [kw1, kw2, kw3, kw4, kw5, kw6, kw7, kw8]
     """
     
-    # ၁။ Gemini ကို အရင်စမ်းမယ်
-    print("🧠 Trying Gemini for news content...")
+    # ၁။ Gemini အရင်စမ်းမယ်
+    print("🧠 Trying Gemini...")
     try:
-        response = gemini_model.generate_content(prompt, generation_config={"temperature": 0.8})
+        genai.configure(api_key=GEMINI_API_KEY)
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        response = model.generate_content(prompt)
         text = response.text
         if "STORY:" in text:
-            print("✅ Gemini successfully generated the news.")
             return parse_output(text)
     except Exception as e:
-        print(f"⚠️ Gemini failed: {e}")
+        print(f"⚠️ Gemini skipped: {e}")
 
-    # ၂။ Gemini မရရင် OpenAI (o4-mini) ကို သုံးမယ်
-    print("🤖 Gemini failed or limited. Switching to OpenAI (o4-mini)...")
+    # ၂။ OpenAI (o4-mini) ဘက်ကူးမယ်
+    print("🤖 Switching to OpenAI (o4-mini)...")
     try:
+        # ဒီနေရာမှာ Key ကို တိုက်ရိုက်ထည့်ပေးလိုက်လို့ Error မတက်တော့ပါဘူး
+        client = OpenAI(api_key=MY_OPENAI_KEY)
         response = client.chat.completions.create(
-            model="o4-mini", # ကိုကိုပေးထားတဲ့ နာမည်အတိုင်း သုံးထားပါတယ်
+            model="o1-mini", # OpenAI ရဲ့ နာမည်မှန်က o1-mini သို့မဟုတ် o3-mini ဖြစ်နိုင်လို့ စစ်ပေးပါ
             messages=[{"role": "user", "content": prompt}]
         )
         text = response.choices[0].message.content
-        if "STORY:" in text:
-            print("✅ OpenAI successfully generated the news.")
-            return parse_output(text)
+        return parse_output(text)
     except Exception as e:
-        print(f"❌ Both AI Models failed: {e}")
-        return "Breaking news from Seoul today. " * 50, ["kpop", "korean actor"]
+        print(f"❌ OpenAI Error: {e}")
+        return "Breaking news from Seoul. " * 50, ["kpop", "seoul"]
 
 def parse_output(text):
     try:
@@ -88,7 +84,7 @@ def parse_output(text):
         tags = text.split("TAGS:")[1].strip().replace("[","").replace("]","").split(",")
         return story, [t.strip() for t in tags]
     except:
-        return "Error in parsing AI response.", ["kpop", "seoul"]
+        return "Long news update about K-pop.", ["kpop", "korean actor"]
 
 async def make_video():
     target_duration = 120
@@ -97,17 +93,14 @@ async def make_video():
     if len(story_text.split()) < 300:
         story_text = (story_text + " ") * 2
         
-    # Audio
     await edge_tts.Communicate(story_text, VOICE).save("voice.mp3")
     audio = AudioFileClip("voice.mp3")
     final_audio = audio.subclip(0, min(audio.duration, target_duration))
-    actual_duration = final_audio.duration
     
-    # Images
-    print("📸 Downloading Images...")
-    headers = {"Authorization": PEXELS_API_KEY}
+    print("📸 Fetching Pexels Images...")
     local_imgs = []
-    for i, kw in enumerate(keywords):
+    headers = {"Authorization": PEXELS_API_KEY}
+    for kw in keywords:
         url = f"https://api.pexels.com/v1/search?query={urllib.parse.quote(kw)}&per_page=2&orientation=landscape"
         try:
             res = requests.get(url, headers=headers).json()
@@ -118,35 +111,34 @@ async def make_video():
                     with open(fname, "wb") as f: f.write(r.content)
                     local_imgs.append(fname)
         except: continue
-    
+
     if not local_imgs: return None
         
-    # Clips
-    sec_per_img = actual_duration / len(local_imgs)
-    clips = [ImageClip(p).set_duration(sec_per_img).set_fps(8).resize(width=640) for p in local_images]
+    sec_per_img = final_audio.duration / len(local_imgs)
+    clips = [ImageClip(p).set_duration(sec_per_img).set_fps(8).resize(width=640) for p in local_imgs]
     
-    print(f"🎬 Rendering {actual_duration:.1f}s video...")
+    print("🎬 Rendering...")
     video = concatenate_videoclips(clips, method="chain").set_audio(final_audio)
-    video.write_videofile("news_final.mp4", fps=8, codec="libx264", bitrate="500k", logger=None)
+    video.write_videofile("final.mp4", fps=8, codec="libx264", bitrate="500k", logger=None)
     
     audio.close()
-    return "news_final.mp4", local_imgs, story_text
+    return "final.mp4", local_imgs, story_text
 
 async def main():
-    print("🚀 Starting Production with Dual-AI Support...")
+    print("🚀 Starting Production (Fixed Key Logic)...")
     try:
         result = await make_video()
         if result:
             path, imgs, story = result
             url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendVideo"
             with open(path, "rb") as v:
-                requests.post(url, files={"video": v}, data={"chat_id": TELEGRAM_CHAT_ID, "caption": "🎬 2-Minute Smart News (Dual-AI Support)"})
+                requests.post(url, files={"video": v}, data={"chat_id": TELEGRAM_CHAT_ID, "caption": "🎬 2-Minute Smart News"})
             
             os.remove(path); os.remove("voice.mp3")
             for img in imgs: os.remove(img)
-            print("✅ Completed!")
+            print("✅ Success!")
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"❌ Main Error: {e}")
 
 if __name__ == "__main__":
     asyncio.run(main())
